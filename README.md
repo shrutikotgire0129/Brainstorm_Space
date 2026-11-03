@@ -1,4 +1,3 @@
-@"
 # Brainstorm Space
 
 A real-time collaborative digital whiteboard for corporate offsites,
