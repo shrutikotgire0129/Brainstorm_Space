@@ -1,69 +1,250 @@
-import Image from "next/image";
+"use client";
+
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+
+const features = [
+  {
+    number: "01",
+    title: "Think freely",
+    description:
+      "Sketch ideas, write thoughts, and let your creativity flow without limits.",
+    icon: "✳",
+  },
+  {
+    number: "02",
+    title: "Work together",
+    description:
+      "Bring your team into one shared space and watch ideas come to life.",
+    icon: "↗",
+  },
+  {
+    number: "03",
+    title: "Make ideas happen",
+    description:
+      "Turn scattered thoughts into clear plans your entire team can understand.",
+    icon: "◇",
+  },
+];
+
+function WhiteboardPreview() {
+  return (
+    <div className="preview-window">
+      <div className="preview-topbar">
+        <div className="preview-brand">
+          <span className="brand-mark small-mark">B</span>
+          <span>Untitled brainstorm</span>
+        </div>
+        <div className="preview-avatars">
+          <span className="avatar avatar-one">S</span>
+          <span className="avatar avatar-two">A</span>
+          <span className="avatar avatar-three">R</span>
+          <span className="invite-pill">+ Invite</span>
+        </div>
+      </div>
+
+      <div className="preview-canvas">
+        <div className="canvas-grid" />
+
+        <div className="canvas-toolbar">
+          <span className="tool active-tool">↖</span>
+          <span className="tool">✎</span>
+          <span className="tool">T</span>
+          <span className="tool">▧</span>
+          <span className="tool">⌑</span>
+        </div>
+
+        <div className="brainstorm-heading">
+          <span className="heading-label">TEAM WORKSHOP</span>
+          <h3>Big ideas start here.</h3>
+          <p>Our next big thing</p>
+        </div>
+
+        <div className="sticky sticky-yellow">
+          <span className="sticky-pin">✳</span>
+          <strong>Think differently</strong>
+          <p>What if we tried something completely new?</p>
+          <span className="sticky-author">Shruti</span>
+        </div>
+
+        <div className="sticky sticky-pink">
+          <span className="sticky-pin">✳</span>
+          <strong>Make it simple</strong>
+          <p>Less complexity. More impact.</p>
+          <span className="sticky-author">Alex</span>
+        </div>
+
+        <div className="sticky sticky-purple">
+          <span className="sticky-pin">✳</span>
+          <strong>Build together</strong>
+          <p>Great ideas come from great teams.</p>
+          <span className="sticky-author">Riya</span>
+        </div>
+
+        <div className="preview-cursor cursor-one">
+          <span className="cursor-pointer">↖</span>
+          <span className="cursor-label">Alex</span>
+        </div>
+
+        <div className="preview-cursor cursor-two">
+          <span className="cursor-pointer">↖</span>
+          <span className="cursor-label">Riya</span>
+        </div>
+
+        <div className="canvas-status">
+          <span className="status-dot" />
+          Everyone is brainstorming
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function Home() {
+  const router = useRouter();
+
+  function createBoard() {
+    const roomId = crypto.randomUUID();
+    router.push(`/board/${roomId}`);
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
+    <main className="home-page">
+      <nav className="navbar">
+        <Link href="/" className="brand">
+          <span className="brand-mark">B</span>
+          <span>
+            brainstorm<span className="brand-space">space</span>
+          </span>
+        </Link>
+
+        <div className="nav-links">
+          <Link href="#features">Features</Link>
+          <Link href="#how-it-works">How it works</Link>
+        </div>
+
+        <button className="nav-cta" onClick={createBoard}>
+          Create a board <span>↗</span>
+        </button>
+      </nav>
+
+      <section className="hero-section">
+        <div className="hero-copy">
+          <div className="eyebrow">
+            <span className="eyebrow-dot" />
+            YOUR TEAM&apos;S CREATIVE SPACE
+          </div>
+
+          <h1>
+            Great ideas
+            <br />
+            don&apos;t happen
+            <br />
+            <span className="highlight-text">in isolation.</span>
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+
+          <p className="hero-description">
+            A shared space for your team to think out loud, explore
+            possibilities, and turn a little chaos into something brilliant.
+          </p>
+
+          <div className="hero-actions">
+            <button className="primary-button" onClick={createBoard}>
+              Start brainstorming
+              <span className="button-arrow">↗</span>
+            </button>
+
+            <a href="#how-it-works" className="secondary-link">
+              See how it works <span>↓</span>
+            </a>
+          </div>
+
+          <div className="hero-proof">
+            <div className="proof-avatars">
+              <span className="proof-avatar proof-one">S</span>
+              <span className="proof-avatar proof-two">A</span>
+              <span className="proof-avatar proof-three">R</span>
+            </div>
+
+            <p>
+              <strong>One space.</strong> Endless possibilities.
+            </p>
+          </div>
+        </div>
+
+        <div className="hero-visual">
+          <div className="visual-orbit orbit-one" />
+          <div className="visual-orbit orbit-two" />
+
+          <div className="preview-label">
+            <span className="preview-label-dot" />
+            YOUR IDEAS, TOGETHER
+          </div>
+
+          <WhiteboardPreview />
+
+          <div className="floating-note floating-note-one">
+            <span>✳</span> Think bigger
+          </div>
+
+          <div className="floating-note floating-note-two">
+            <span>↗</span> Create together
+          </div>
+        </div>
+      </section>
+
+      <section className="features-section" id="features">
+        <div className="section-heading">
+          <span className="section-eyebrow">A BETTER WAY TO BRAINSTORM</span>
+          <h2>
+            Space for every
+            <span> brilliant thought.</span>
+          </h2>
+          <p>From the first spark of an idea to your next big breakthrough.</p>
+        </div>
+
+        <div className="feature-grid">
+          {features.map((feature) => (
+            <article className="feature-card" key={feature.number}>
+              <div className="feature-card-top">
+                <span className="feature-number">{feature.number}</span>
+                <span className="feature-icon">{feature.icon}</span>
+              </div>
+
+              <h3>{feature.title}</h3>
+              <p>{feature.description}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="bottom-cta" id="how-it-works">
+        <div>
+          <span className="section-eyebrow">YOUR NEXT IDEA STARTS HERE</span>
+          <h2>Bring your team together.</h2>
+          <p>
+            Create a board, invite your team, and start building something
+            great.
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+
+        <button className="primary-button" onClick={createBoard}>
+          Create your board <span className="button-arrow">↗</span>
+        </button>
+      </section>
+
+      <footer className="footer">
+        <Link href="/" className="brand footer-brand">
+          <span className="brand-mark">B</span>
+          <span>
+            brainstorm<span className="brand-space">space</span>
+          </span>
+        </Link>
+
+        <p>Made for ideas that bring people together.</p>
+
+        <span className="footer-copyright">© 2026 Brainstorm Space</span>
+      </footer>
+    </main>
   );
 }
