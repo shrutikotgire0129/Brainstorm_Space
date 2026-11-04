@@ -12,10 +12,45 @@ export type WhiteboardTool =
   | "draw"
   | "erase"
   | "note"
-  | "text";
+  | "text"
+  | "shape";
+
+export type ShapeType =
+  | "rectangle"
+  | "square"
+  | "circle"
+  | "triangle"
+  | "hexagon"
+  | "callout"
+  | "arrow"
+  | "line";
+
+const SHAPES: { type: ShapeType; label: string; icon: string }[] = [
+  { type: "rectangle", label: "Rectangle", icon: "▱" },
+  { type: "square", label: "Square", icon: "□" },
+  { type: "circle", label: "Circle", icon: "○" },
+  { type: "triangle", label: "Triangle", icon: "△" },
+  { type: "hexagon", label: "Hexagon", icon: "⬡" },
+  { type: "callout", label: "Callout", icon: "▢" },
+  { type: "arrow", label: "Arrow", icon: "→" },
+  { type: "line", label: "Line", icon: "╱" },
+];
 
 export default function BoardWorkspace({ roomId }: BoardWorkspaceProps) {
   const [activeTool, setActiveTool] = useState<WhiteboardTool>("select");
+  const [selectedShape, setSelectedShape] = useState<ShapeType>("rectangle");
+  const [isShapesOpen, setIsShapesOpen] = useState(false);
+
+  const chooseTool = (tool: WhiteboardTool) => {
+    setActiveTool(tool);
+    setIsShapesOpen(false);
+  };
+
+  const chooseShape = (shape: ShapeType) => {
+    setSelectedShape(shape);
+    setActiveTool("shape");
+    setIsShapesOpen(false);
+  };
 
   return (
     <>
@@ -27,7 +62,7 @@ export default function BoardWorkspace({ roomId }: BoardWorkspaceProps) {
           }`}
           title="Select and move objects"
           aria-pressed={activeTool === "select"}
-          onClick={() => setActiveTool("select")}
+          onClick={() => chooseTool("select")}
         >
           <span>↖</span>
           <span className="tool-label">Select</span>
@@ -42,7 +77,7 @@ export default function BoardWorkspace({ roomId }: BoardWorkspaceProps) {
           }`}
           title="Freehand drawing"
           aria-pressed={activeTool === "draw"}
-          onClick={() => setActiveTool("draw")}
+          onClick={() => chooseTool("draw")}
         >
           <span>✎</span>
           <span className="tool-label">Draw</span>
@@ -55,7 +90,7 @@ export default function BoardWorkspace({ roomId }: BoardWorkspaceProps) {
           }`}
           title="Erase individual strokes"
           aria-pressed={activeTool === "erase"}
-          onClick={() => setActiveTool("erase")}
+          onClick={() => chooseTool("erase")}
         >
           <span>⌫</span>
           <span className="tool-label">Eraser</span>
@@ -68,21 +103,58 @@ export default function BoardWorkspace({ roomId }: BoardWorkspaceProps) {
           }`}
           title="Add a sticky note"
           aria-pressed={activeTool === "note"}
-          onClick={() => setActiveTool("note")}
+          onClick={() => chooseTool("note")}
         >
           <span>▤</span>
           <span className="tool-label">Notes</span>
         </button>
 
-        <button
-          type="button"
-          className="board-tool-button"
-          disabled
-          title="Shapes coming in a later phase"
-        >
-          <span>◇</span>
-          <span className="tool-label">Shapes</span>
-        </button>
+        <div className="board-shapes-container">
+          <button
+            type="button"
+            className={`board-tool-button ${
+              activeTool === "shape" ? "active" : ""
+            }`}
+            title="Choose a shape"
+            aria-expanded={isShapesOpen}
+            aria-haspopup="true"
+            onClick={() => {
+              setIsShapesOpen((open) => !open);
+            }}
+          >
+            <span>◇</span>
+            <span className="tool-label">Shapes</span>
+          </button>
+
+          {isShapesOpen && (
+            <div className="board-shapes-panel">
+              <div className="board-shapes-heading">Choose a shape</div>
+
+              <div className="board-shapes-grid">
+                {SHAPES.map((shape) => (
+                  <button
+                    key={shape.type}
+                    type="button"
+                    className={`board-shape-option ${
+                      selectedShape === shape.type && activeTool === "shape"
+                        ? "selected"
+                        : ""
+                    }`}
+                    title={shape.label}
+                    aria-label={shape.label}
+                    aria-pressed={
+                      selectedShape === shape.type && activeTool === "shape"
+                    }
+                    onClick={() => chooseShape(shape.type)}
+                  >
+                    <span className="board-shape-icon">{shape.icon}</span>
+                    <span>{shape.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
 
         <button
           type="button"
@@ -91,14 +163,18 @@ export default function BoardWorkspace({ roomId }: BoardWorkspaceProps) {
           }`}
           title="Add standalone text"
           aria-pressed={activeTool === "text"}
-          onClick={() => setActiveTool("text")}
+          onClick={() => chooseTool("text")}
         >
           <span>T</span>
           <span className="tool-label">Text</span>
         </button>
       </div>
 
-      <WhiteboardCanvas roomId={roomId} activeTool={activeTool} />
+      <WhiteboardCanvas
+        roomId={roomId}
+        activeTool={activeTool}
+        selectedShape={selectedShape}
+      />
     </>
   );
 }

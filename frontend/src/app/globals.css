@@ -1439,3 +1439,62 @@ a {
   accent-color: #8b78e6;
   cursor: pointer;
 }
+
+
+.board-shapes-container {
+  position: relative;
+}
+
+.board-shapes-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  z-index: 50;
+  width: 260px;
+  padding: 14px;
+  background: #ffffff;
+  border: 1px solid #e7e1ed;
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(37, 37, 37, 0.12);
+}
+
+.board-shapes-heading {
+  margin-bottom: 12px;
+  color: #252525;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.board-shapes-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.board-shape-option {
+  display: flex;
+  min-height: 76px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid #eee9f3;
+  border-radius: 9px;
+  background: #ffffff;
+  color: #494252;
+  cursor: pointer;
+  font-size: 11px;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.board-shape-option:hover,
+.board-shape-option.selected {
+  background: #f3eefb;
+  border-color: #9a80c5;
+}
+
+.board-shape-icon {
+  color: #7256a8;
+  font-size: 27px;
+  line-height: 1;
+}

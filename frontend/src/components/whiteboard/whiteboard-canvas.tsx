@@ -8,12 +8,19 @@ import {
   FabricObject,
   IText,
   Textbox,
+  Rect,
+  Circle,
+  Triangle,
+  Polygon,
+  Line,
+  Path,
 } from "fabric";
-import type { WhiteboardTool } from "./board-workspace";
+import type { WhiteboardTool, ShapeType } from "./board-workspace";
 
 type WhiteboardCanvasProps = {
   roomId: string;
   activeTool: WhiteboardTool;
+  selectedShape: ShapeType;
 };
 
 const NOTE_COLORS = ["#FFF2A8", "#FFD6D6", "#D9F2E6", "#DCE8FF", "#EADCF8"];
@@ -43,21 +50,34 @@ function persistBoard(canvas: Canvas, roomId: string) {
 export default function WhiteboardCanvas({
   roomId,
   activeTool,
+  selectedShape,
 }: WhiteboardCanvasProps) {
   const canvasElementRef = useRef<HTMLCanvasElement>(null);
   const canvasRef = useRef<Canvas | null>(null);
   const activeToolRef = useRef<WhiteboardTool>(activeTool);
+  const selectedShapeRef = useRef<ShapeType>(selectedShape);
 
   const [zoom, setZoom] = useState(1);
   const [brushColor, setBrushColor] = useState("#252525");
   const [brushSize, setBrushSize] = useState(3);
   const [noteColor, setNoteColor] = useState(NOTE_COLORS[0]);
+  const [shapeFill, setShapeFill] = useState("#F3EFF9");
+  const [shapeStroke, setShapeStroke] = useState("#7256A8");
+  const [shapeStrokeWidth, setShapeStrokeWidth] = useState(2);
+
+  const shapeFillRef = useRef(shapeFill);
+  const shapeStrokeRef = useRef(shapeStroke);
+  const shapeStrokeWidthRef = useRef(shapeStrokeWidth);
 
   const noteColorRef = useRef(noteColor);
 
   useEffect(() => {
     noteColorRef.current = noteColor;
   }, [noteColor]);
+
+  useEffect(() => {
+    selectedShapeRef.current = selectedShape;
+  }, [selectedShape]);
 
   useEffect(() => {
     const element = canvasElementRef.current;
@@ -91,6 +111,9 @@ export default function WhiteboardCanvas({
     let isPanning = false;
     let lastPointerX = 0;
     let lastPointerY = 0;
+
+    let shapeBeingDrawn: FabricObject | null = null;
+    let shapeStartPoint: Point | null = null;
 
     let isRestoring = false;
     let saveTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -231,6 +254,144 @@ export default function WhiteboardCanvas({
       canvas.requestRenderAll();
     };
 
+    const createShape = (
+      type: ShapeType,
+      start: Point,
+      end: Point,
+    ): FabricObject => {
+      const left = Math.min(start.x, end.x);
+      const top = Math.min(start.y, end.y);
+      const width = Math.abs(end.x - start.x);
+      const height = Math.abs(end.y - start.y);
+
+      const common = {
+        fill: shapeFillRef.current,
+        stroke: shapeStrokeRef.current,
+        strokeWidth: shapeStrokeWidthRef.current,
+        selectable: true,
+        hasControls: true,
+        hasBorders: true,
+        cornerColor: "#7256A8",
+        borderColor: "#7256A8",
+        transparentCorners: false,
+        lockRotation: true,
+      };
+
+      switch (type) {
+        case "rectangle":
+          return new Rect({
+            ...common,
+            left,
+            top,
+            width,
+            height,
+          });
+
+        case "square": {
+          const size = Math.max(width, height);
+          return new Rect({
+            ...common,
+            left: start.x <= end.x ? start.x : start.x - size,
+            top: start.y <= end.y ? start.y : start.y - size,
+            width: size,
+            height: size,
+          });
+        }
+
+        case "circle":
+          return new Circle({
+            ...common,
+            left,
+            top,
+            radius: Math.max(width, height) / 2,
+          });
+
+        case "triangle":
+          return new Triangle({
+            ...common,
+            left,
+            top,
+            width,
+            height,
+          });
+
+        case "hexagon": {
+          const points = Array.from({ length: 6 }, (_, index) => {
+            const angle = (Math.PI / 3) * index - Math.PI / 2;
+            return {
+              x: width / 2 + (width / 2) * Math.cos(angle),
+              y: height / 2 + (height / 2) * Math.sin(angle),
+            };
+          });
+
+          return new Polygon(points, {
+            ...common,
+            left,
+            top,
+            width,
+            height,
+          });
+        }
+
+        case "callout": {
+          const tail = Math.min(18, width / 5, height / 4);
+
+          const points = [
+            { x: 0, y: 0 },
+            { x: width, y: 0 },
+            { x: width, y: height - tail },
+            { x: width * 0.65, y: height - tail },
+            { x: width * 0.5, y: height },
+            { x: width * 0.4, y: height - tail },
+            { x: 0, y: height - tail },
+          ];
+
+          return new Polygon(points, {
+            ...common,
+            left,
+            top,
+            width,
+            height,
+          });
+        }
+
+        case "arrow": {
+          const shaft = new Path(
+            `M 0 0 L ${width} ${height} M ${width - 14} ${height - 14} L ${width} ${height} L ${width - 14} ${height + 14}`,
+            {
+              ...common,
+              left,
+              top,
+              fill: "",
+              stroke: "#7256A8",
+              strokeWidth: 3,
+            },
+          );
+
+          return shaft;
+        }
+
+        case "line":
+          return new Line([0, 0, width, height], {
+            ...common,
+            left,
+            top,
+            fill: "",
+            stroke: "#7256A8",
+            strokeWidth: 2,
+          });
+
+        default:
+          return new Rect({
+            ...common,
+            left,
+            top,
+            width,
+            height,
+          });
+      }
+    };
+
     const handleMouseDown = (event: {
       e: MouseEvent | TouchEvent;
       target?: unknown;
@@ -252,6 +413,23 @@ export default function WhiteboardCanvas({
 
       if (currentTool === "text" && !event.target) {
         createTextObject(pointerEvent);
+        return;
+      }
+      // Start drawing the selected shape.
+      if (currentTool === "shape" && !event.target) {
+        const pointer = canvas.getScenePoint(pointerEvent);
+
+        shapeStartPoint = new Point(pointer.x, pointer.y);
+
+        shapeBeingDrawn = createShape(
+          selectedShapeRef.current,
+          shapeStartPoint,
+          shapeStartPoint,
+        );
+
+        canvas.add(shapeBeingDrawn);
+        canvas.setActiveObject(shapeBeingDrawn);
+
         return;
       }
 
@@ -277,6 +455,30 @@ export default function WhiteboardCanvas({
         eraseTarget(event.target);
         return;
       }
+      // Update the selected shape while dragging.
+      if (shapeBeingDrawn && shapeStartPoint) {
+        const pointer = canvas.getScenePoint(event.e as MouseEvent);
+
+        const replacement = createShape(
+          selectedShapeRef.current,
+          shapeStartPoint,
+          new Point(pointer.x, pointer.y),
+        );
+
+        const index = canvas.getObjects().indexOf(shapeBeingDrawn);
+
+        if (index !== -1) {
+          canvas.remove(shapeBeingDrawn);
+          canvas.insertAt(index, replacement);
+        }
+
+        shapeBeingDrawn = replacement;
+        canvas.setActiveObject(replacement);
+        replacement.setCoords();
+        canvas.requestRenderAll();
+
+        return;
+      }
 
       if (!isPanning || canvas.isDrawingMode) return;
 
@@ -298,6 +500,21 @@ export default function WhiteboardCanvas({
     };
 
     const handleMouseUp = () => {
+      // Finish drawing the selected shape.
+      if (shapeBeingDrawn) {
+        const bounds = shapeBeingDrawn.getBoundingRect();
+
+        if (bounds.width < 5 || bounds.height < 5) {
+          canvas.remove(shapeBeingDrawn);
+        } else {
+          shapeBeingDrawn.setCoords();
+          canvas.setActiveObject(shapeBeingDrawn);
+          saveBoard();
+        }
+
+        shapeBeingDrawn = null;
+        shapeStartPoint = null;
+      }
       if (isPanning) {
         saveBoard();
       }
@@ -355,7 +572,18 @@ export default function WhiteboardCanvas({
 
       if (!activeObject) return;
 
-      if (activeObject.type !== "textbox" && activeObject.type !== "i-text") {
+      const deletableTypes = [
+        "textbox",
+        "i-text",
+        "rect",
+        "circle",
+        "triangle",
+        "polygon",
+        "line",
+        "path",
+      ];
+
+      if (!deletableTypes.includes(activeObject.type)) {
         return;
       }
 
@@ -461,6 +689,51 @@ export default function WhiteboardCanvas({
     setBrushSize(size);
   };
 
+  const changeShapeFill = (color: string) => {
+    shapeFillRef.current = color;
+    setShapeFill(color);
+
+    const canvas = canvasRef.current;
+    const activeObject = canvas?.getActiveObject();
+
+    if (canvas && activeObject) {
+      if (activeObject.type !== "line" && activeObject.type !== "path") {
+        activeObject.set("fill", color);
+      }
+
+      canvas.requestRenderAll();
+      persistBoard(canvas, roomId);
+    }
+  };
+
+  const changeShapeStroke = (color: string) => {
+    shapeStrokeRef.current = color;
+    setShapeStroke(color);
+
+    const canvas = canvasRef.current;
+    const activeObject = canvas?.getActiveObject();
+
+    if (canvas && activeObject) {
+      activeObject.set("stroke", color);
+      canvas.requestRenderAll();
+      persistBoard(canvas, roomId);
+    }
+  };
+
+  const changeShapeStrokeWidth = (width: number) => {
+    shapeStrokeWidthRef.current = width;
+    setShapeStrokeWidth(width);
+
+    const canvas = canvasRef.current;
+    const activeObject = canvas?.getActiveObject();
+
+    if (canvas && activeObject) {
+      activeObject.set("strokeWidth", width);
+      canvas.requestRenderAll();
+      persistBoard(canvas, roomId);
+    }
+  };
+
   const changeZoom = (direction: "in" | "out") => {
     const canvas = canvasRef.current;
 
@@ -522,6 +795,57 @@ export default function WhiteboardCanvas({
               aria-label="Choose sticky note color"
             />
           </label>
+        )}
+
+        {activeTool === "shape" && (
+          <>
+            <label
+              className="canvas-color-control"
+              title="Choose shape fill color"
+            >
+              <span className="canvas-color-label">Fill</span>
+              <input
+                type="color"
+                value={shapeFill}
+                onChange={(event) => changeShapeFill(event.target.value)}
+                aria-label="Choose shape fill color"
+              />
+            </label>
+
+            <label
+              className="canvas-color-control"
+              title="Choose shape border color"
+            >
+              <span className="canvas-color-label">Border</span>
+              <input
+                type="color"
+                value={shapeStroke}
+                onChange={(event) => changeShapeStroke(event.target.value)}
+                aria-label="Choose shape border color"
+              />
+            </label>
+
+            <label
+              className="canvas-brush-control"
+              title="Adjust shape border width"
+            >
+              <span className="canvas-brush-label">Border width</span>
+
+              <input
+                type="range"
+                min="1"
+                max="10"
+                step="1"
+                value={shapeStrokeWidth}
+                onChange={(event) =>
+                  changeShapeStrokeWidth(Number(event.target.value))
+                }
+                aria-label="Shape border width"
+              />
+
+              <span className="canvas-brush-value">{shapeStrokeWidth}px</span>
+            </label>
+          </>
         )}
 
         <label className="canvas-brush-control" title="Adjust brush size">
