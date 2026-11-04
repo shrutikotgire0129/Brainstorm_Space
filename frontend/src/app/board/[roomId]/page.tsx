@@ -1,6 +1,6 @@
 
 import Link from "next/link";
-import WhiteboardCanvas from "@/components/whiteboard/whiteboard-canvas";
+import BoardWorkspace from "@/components/whiteboard/board-workspace";
 
 export const instant = false;
 
@@ -51,60 +51,7 @@ export default async function BoardPage({
         </div>
       </header>
 
-      <div className="board-toolbar">
-        <button
-          type="button"
-          className="board-tool-button active"
-          title="Select and pan"
-        >
-          <span>↖</span>
-          <span className="tool-label">Select</span>
-        </button>
-
-        <div className="board-toolbar-divider" />
-
-        <button
-          type="button"
-          className="board-tool-button"
-          disabled
-          title="Drawing tool coming soon"
-        >
-          <span>✎</span>
-          <span className="tool-label">Draw</span>
-        </button>
-
-        <button
-          type="button"
-          className="board-tool-button"
-          disabled
-          title="Sticky notes coming soon"
-        >
-          <span>▤</span>
-          <span className="tool-label">Notes</span>
-        </button>
-
-        <button
-          type="button"
-          className="board-tool-button"
-          disabled
-          title="Shapes coming soon"
-        >
-          <span>◇</span>
-          <span className="tool-label">Shapes</span>
-        </button>
-
-        <button
-          type="button"
-          className="board-tool-button"
-          disabled
-          title="Text tool coming soon"
-        >
-          <span>T</span>
-          <span className="tool-label">Text</span>
-        </button>
-      </div>
-
-      <WhiteboardCanvas roomId={roomId} />
+      <BoardWorkspace roomId={roomId} />
     </main>
   );
 }

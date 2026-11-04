@@ -1,20 +1,25 @@
-
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Canvas, Point } from "fabric";
+import { Canvas, Point, PencilBrush, FabricObject } from "fabric";
+import type { WhiteboardTool } from "./board-workspace";
 
 type WhiteboardCanvasProps = {
   roomId: string;
+  activeTool: WhiteboardTool;
 };
 
 export default function WhiteboardCanvas({
   roomId,
+  activeTool,
 }: WhiteboardCanvasProps) {
   const canvasElementRef = useRef<HTMLCanvasElement>(null);
   const canvasRef = useRef<Canvas | null>(null);
+  const activeToolRef = useRef<WhiteboardTool>(activeTool);
 
   const [zoom, setZoom] = useState(1);
+  const [brushColor, setBrushColor] = useState("#252525");
+  const [brushSize, setBrushSize] = useState(3);
 
   useEffect(() => {
     const element = canvasElementRef.current;
@@ -33,18 +38,47 @@ export default function WhiteboardCanvas({
       backgroundColor: "transparent",
       defaultCursor: "grab",
       hoverCursor: "default",
+      isDrawingMode: false,
+      perPixelTargetFind: true,
+      targetFindTolerance: 8,
     });
 
     canvasRef.current = canvas;
+
+    const brush = new PencilBrush(canvas);
+    brush.width = 3;
+    brush.color = "#252525";
+
+    canvas.freeDrawingBrush = brush;
 
     let isPanning = false;
     let lastPointerX = 0;
     let lastPointerY = 0;
 
+    const eraseTarget = (target: unknown) => {
+      if (!target || typeof target !== "object") return;
+
+      const fabricTarget = target as FabricObject;
+
+      // Only remove freehand drawing paths.
+      if (fabricTarget.type === "path") {
+        canvas.remove(fabricTarget);
+        canvas.requestRenderAll();
+      }
+    };
+
     const handleMouseDown = (event: {
       e: MouseEvent | TouchEvent;
       target?: unknown;
     }) => {
+      if (canvas.isDrawingMode) return;
+
+      // Eraser removes the stroke under the pointer.
+      if (activeToolRef.current === "erase") {
+        eraseTarget(event.target);
+        return;
+      }
+
       if (event.target) return;
 
       const pointerEvent = event.e as MouseEvent;
@@ -59,8 +93,14 @@ export default function WhiteboardCanvas({
 
     const handleMouseMove = (event: {
       e: MouseEvent | TouchEvent;
+      target?: unknown;
     }) => {
-      if (!isPanning) return;
+      if (activeToolRef.current === "erase") {
+        eraseTarget(event.target);
+        return;
+      }
+
+      if (!isPanning || canvas.isDrawingMode) return;
 
       const pointerEvent = event.e as MouseEvent;
       const viewport = canvas.viewportTransform;
@@ -81,13 +121,15 @@ export default function WhiteboardCanvas({
 
     const handleMouseUp = () => {
       isPanning = false;
-      canvas.setCursor("grab");
+
+      const tool = activeToolRef.current;
+
+      canvas.setCursor(tool === "select" ? "grab" : "crosshair");
+
       canvas.selection = false;
     };
 
-    const handleMouseWheel = (event: {
-      e: WheelEvent;
-    }) => {
+    const handleMouseWheel = (event: { e: WheelEvent }) => {
       const wheelEvent = event.e;
 
       wheelEvent.preventDefault();
@@ -95,19 +137,13 @@ export default function WhiteboardCanvas({
 
       const currentZoom = canvas.getZoom();
 
-      let nextZoom = currentZoom * Math.pow(
-        0.999,
-        wheelEvent.deltaY
-      );
+      let nextZoom = currentZoom * Math.pow(0.999, wheelEvent.deltaY);
 
       nextZoom = Math.min(3, Math.max(0.2, nextZoom));
 
       const pointer = canvas.getViewportPoint(wheelEvent);
 
-      canvas.zoomToPoint(
-        new Point(pointer.x, pointer.y),
-        nextZoom
-      );
+      canvas.zoomToPoint(new Point(pointer.x, pointer.y), nextZoom);
 
       setZoom(nextZoom);
     };
@@ -142,6 +178,46 @@ export default function WhiteboardCanvas({
     };
   }, []);
 
+  // Synchronize the selected toolbar tool with Fabric.js.
+  useEffect(() => {
+    activeToolRef.current = activeTool;
+
+    const canvas = canvasRef.current;
+
+    if (!canvas) return;
+
+    const drawingEnabled = activeTool === "draw";
+
+    canvas.isDrawingMode = drawingEnabled;
+    canvas.selection = false;
+
+    canvas.defaultCursor = activeTool === "select" ? "grab" : "crosshair";
+
+    canvas.hoverCursor = activeTool === "select" ? "default" : "crosshair";
+
+    canvas.setCursor(activeTool === "select" ? "grab" : "crosshair");
+
+    canvas.requestRenderAll();
+  }, [activeTool]);
+
+  const changeBrushColor = (color: string) => {
+    const canvas = canvasRef.current;
+
+    if (!canvas?.freeDrawingBrush) return;
+
+    canvas.freeDrawingBrush.color = color;
+    setBrushColor(color);
+  };
+
+  const changeBrushSize = (size: number) => {
+    const canvas = canvasRef.current;
+
+    if (!canvas?.freeDrawingBrush) return;
+
+    canvas.freeDrawingBrush.width = size;
+    setBrushSize(size);
+  };
+
   const changeZoom = (direction: "in" | "out") => {
     const canvas = canvasRef.current;
 
@@ -154,10 +230,7 @@ export default function WhiteboardCanvas({
         ? Math.min(3, currentZoom + 0.1)
         : Math.max(0.2, currentZoom - 0.1);
 
-    const center = new Point(
-      canvas.getWidth() / 2,
-      canvas.getHeight() / 2
-    );
+    const center = new Point(canvas.getWidth() / 2, canvas.getHeight() / 2);
 
     canvas.zoomToPoint(center, nextZoom);
 
@@ -181,6 +254,30 @@ export default function WhiteboardCanvas({
       </div>
 
       <div className="canvas-controls">
+        <label className="canvas-color-control" title="Choose drawing color">
+          <span className="canvas-color-label">Color</span>
+          <input
+            type="color"
+            value={brushColor}
+            onChange={(event) => changeBrushColor(event.target.value)}
+            aria-label="Choose drawing color"
+          />
+        </label>
+        <label className="canvas-brush-control" title="Adjust brush size">
+          <span className="canvas-brush-label">Size</span>
+
+          <input
+            type="range"
+            min="1"
+            max="30"
+            step="1"
+            value={brushSize}
+            onChange={(event) => changeBrushSize(Number(event.target.value))}
+            aria-label="Brush size"
+          />
+
+          <span className="canvas-brush-value">{brushSize}px</span>
+        </label>
         <button
           type="button"
           className="canvas-control-button"
@@ -220,9 +317,7 @@ export default function WhiteboardCanvas({
         </button>
       </div>
 
-      <div className="canvas-room-label">
-        Board: {roomId.slice(0, 8)}
-      </div>
+      <div className="canvas-room-label">Board: {roomId.slice(0, 8)}</div>
     </section>
   );
 }

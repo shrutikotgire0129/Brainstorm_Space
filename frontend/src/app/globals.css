@@ -1392,3 +1392,50 @@ a {
     left: 10px;
   }
 }
+
+.canvas-color-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-right: 1px solid #e8e4f0;
+  cursor: pointer;
+}
+
+.canvas-color-label {
+  color: #625b75;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.canvas-color-control input[type="color"] {
+  width: 30px;
+  height: 30px;
+  padding: 2px;
+  border: 1px solid #e5e0ed;
+  border-radius: 7px;
+  background: white;
+  cursor: pointer;
+}
+
+.canvas-brush-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-right: 1px solid #e8e4f0;
+}
+
+.canvas-brush-label,
+.canvas-brush-value {
+  color: #625b75;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.canvas-brush-control input[type="range"] {
+  width: 75px;
+  accent-color: #8b78e6;
+  cursor: pointer;
+}
