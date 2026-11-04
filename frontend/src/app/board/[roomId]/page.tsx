@@ -1,11 +1,14 @@
+
 import Link from "next/link";
+import WhiteboardCanvas from "@/components/whiteboard/whiteboard-canvas";
+
+export const instant = false;
+
 type BoardPageProps = {
   params: Promise<{
     roomId: string;
   }>;
 };
-
-export const instant = false;
 
 export default async function BoardPage({
   params,
@@ -13,44 +16,95 @@ export default async function BoardPage({
   const { roomId } = await params;
 
   return (
-    <main className="room-page">
-      <header className="room-header">
-        <Link href="/" className="brand">
-          <span className="brand-mark">B</span>
-          <span>
-            brainstorm<span className="brand-space">space</span>
-          </span>
-        </Link>
+    <main className="board-page">
+      <header className="board-header">
+        <div className="board-header-left">
+          <Link href="/" className="board-brand">
+            <span className="brand-mark">B</span>
+            <span>Brainstorm Space</span>
+          </Link>
 
-        <span className="room-badge">
-          <span className="room-dot" />
-          New board
-        </span>
-      </header>
+          <div className="board-header-divider" />
 
-      <section className="room-content">
-        <div className="room-icon">✳</div>
-
-        <span className="section-eyebrow">
-          YOUR CREATIVE SPACE
-        </span>
-
-        <h1>Your board is ready.</h1>
-
-        <p>
-          This is your new brainstorming room.
-          We&apos;ll build the collaborative canvas here next.
-        </p>
-
-        <div className="room-id-card">
-          <span>BOARD ROOM ID</span>
-          <code>{roomId}</code>
+          <div className="board-title">
+            <span className="board-title-name">Untitled board</span>
+            <span className="board-save-status">
+              <span className="save-status-dot" />
+              Local workspace
+            </span>
+          </div>
         </div>
 
-        <Link href="/" className="room-back-link">
-          ← Back to homepage
-        </Link>
-      </section>
+        <div className="board-header-right">
+          <span className="board-room-id">
+            Room {roomId.slice(0, 8)}
+          </span>
+
+          <button
+            type="button"
+            className="board-share-button"
+            disabled
+            title="Sharing will be available in a later feature"
+          >
+            Share
+          </button>
+        </div>
+      </header>
+
+      <div className="board-toolbar">
+        <button
+          type="button"
+          className="board-tool-button active"
+          title="Select and pan"
+        >
+          <span>↖</span>
+          <span className="tool-label">Select</span>
+        </button>
+
+        <div className="board-toolbar-divider" />
+
+        <button
+          type="button"
+          className="board-tool-button"
+          disabled
+          title="Drawing tool coming soon"
+        >
+          <span>✎</span>
+          <span className="tool-label">Draw</span>
+        </button>
+
+        <button
+          type="button"
+          className="board-tool-button"
+          disabled
+          title="Sticky notes coming soon"
+        >
+          <span>▤</span>
+          <span className="tool-label">Notes</span>
+        </button>
+
+        <button
+          type="button"
+          className="board-tool-button"
+          disabled
+          title="Shapes coming soon"
+        >
+          <span>◇</span>
+          <span className="tool-label">Shapes</span>
+        </button>
+
+        <button
+          type="button"
+          className="board-tool-button"
+          disabled
+          title="Text tool coming soon"
+        >
+          <span>T</span>
+          <span className="tool-label">Text</span>
+        </button>
+      </div>
+
+      <WhiteboardCanvas roomId={roomId} />
     </main>
   );
 }

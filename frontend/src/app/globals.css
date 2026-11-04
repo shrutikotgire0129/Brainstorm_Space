@@ -1116,3 +1116,279 @@ a {
     padding-top: 75px;
   }
 }
+
+
+/* Whiteboard canvas foundation */
+
+.board-page {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #f8f7fb;
+  color: #27243a;
+}
+
+.board-header {
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 64px;
+  padding: 0 24px;
+  background: #ffffff;
+  border-bottom: 1px solid #e9e7ef;
+}
+
+.board-header-left,
+.board-header-right {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.board-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #27243a;
+  font-size: 15px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: #7561df;
+  color: #ffffff;
+  font-size: 17px;
+}
+
+.board-header-divider,
+.board-toolbar-divider {
+  width: 1px;
+  height: 28px;
+  background: #e9e7ef;
+}
+
+.board-title {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.board-title-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.board-save-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #858197;
+  font-size: 11px;
+}
+
+.save-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #a5a0b5;
+}
+
+.board-room-id {
+  color: #858197;
+  font-size: 12px;
+}
+
+.board-share-button {
+  padding: 9px 17px;
+  border: 0;
+  border-radius: 9px;
+  background: #7561df;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.board-share-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.board-toolbar {
+  position: absolute;
+  z-index: 20;
+  top: 84px;
+  left: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 9px;
+  border: 1px solid #e9e7ef;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 5px 22px rgb(39 36 58 / 8%);
+}
+
+.board-tool-button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 48px;
+  height: 48px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #6e6981;
+  font-size: 20px;
+}
+
+.board-tool-button.active {
+  background: #eeeaff;
+  color: #7561df;
+}
+
+.board-tool-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.tool-label {
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.board-toolbar-divider {
+  width: 28px;
+  height: 1px;
+  margin: 4px 0;
+}
+
+.whiteboard-workspace {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.whiteboard-canvas-wrapper {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background-color: #fbfaff;
+  background-image: radial-gradient(#d8d4e5 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+.whiteboard-canvas-wrapper canvas {
+  display: block;
+}
+
+.canvas-controls {
+  position: absolute;
+  right: 22px;
+  bottom: 22px;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px;
+  border: 1px solid #e9e7ef;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 5px 22px rgb(39 36 58 / 8%);
+}
+
+.canvas-control-button,
+.canvas-zoom-level {
+  display: grid;
+  place-items: center;
+  min-width: 34px;
+  height: 34px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #514b68;
+  font-size: 19px;
+  cursor: pointer;
+}
+
+.canvas-control-button:hover,
+.canvas-zoom-level:hover {
+  background: #f1eff8;
+}
+
+.canvas-zoom-level {
+  min-width: 54px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.canvas-reset-button {
+  margin-left: 4px;
+  border-left: 1px solid #e9e7ef;
+  border-radius: 0 7px 7px 0;
+}
+
+.canvas-room-label {
+  position: absolute;
+  bottom: 28px;
+  left: 22px;
+  z-index: 10;
+  color: #928da5;
+  font-size: 11px;
+}
+
+@media (max-width: 640px) {
+  .board-header {
+    min-height: 58px;
+    padding: 0 12px;
+  }
+
+  .board-header-left,
+  .board-header-right {
+    gap: 10px;
+  }
+
+  .board-brand {
+    font-size: 12px;
+  }
+
+  .board-header-divider,
+  .board-room-id {
+    display: none;
+  }
+
+  .board-toolbar {
+    top: 72px;
+    left: 10px;
+    gap: 3px;
+    padding: 6px;
+  }
+
+  .board-tool-button {
+    width: 42px;
+    height: 42px;
+  }
+
+  .canvas-controls {
+    right: 10px;
+    bottom: 14px;
+  }
+
+  .canvas-room-label {
+    bottom: 20px;
+    left: 10px;
+  }
+}
