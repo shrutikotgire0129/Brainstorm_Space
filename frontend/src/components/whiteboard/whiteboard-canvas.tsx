@@ -1,13 +1,44 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Canvas, Point, PencilBrush, FabricObject } from "fabric";
+import {
+  Canvas,
+  Point,
+  PencilBrush,
+  FabricObject,
+  IText,
+  Textbox,
+} from "fabric";
 import type { WhiteboardTool } from "./board-workspace";
 
 type WhiteboardCanvasProps = {
   roomId: string;
   activeTool: WhiteboardTool;
 };
+
+const NOTE_COLORS = ["#FFF2A8", "#FFD6D6", "#D9F2E6", "#DCE8FF", "#EADCF8"];
+const ERASER_CURSOR =
+  "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cpath d='M7 18L16 5L25 11L16 24L7 18Z' fill='%23F2B8C6' stroke='%23252525' stroke-width='1.5'/%3E%3Cpath d='M7 18L16 24L12 28L3 22L7 18Z' fill='%23FFFFFF' stroke='%23252525' stroke-width='1.5'/%3E%3Cpath d='M12 28H25' stroke='%23252525' stroke-width='1.5'/%3E%3C/svg%3E\") 5 22, auto";
+
+function persistBoard(canvas: Canvas, roomId: string) {
+  try {
+    const boardState = {
+      version: 1,
+      canvas: canvas.toJSON(),
+      viewportTransform: canvas.viewportTransform
+        ? [...canvas.viewportTransform]
+        : [1, 0, 0, 1, 0, 0],
+      zoom: canvas.getZoom(),
+    };
+
+    localStorage.setItem(
+      `brainstorm-space-board:${roomId}`,
+      JSON.stringify(boardState),
+    );
+  } catch (error) {
+    console.error("Failed to save whiteboard:", error);
+  }
+}
 
 export default function WhiteboardCanvas({
   roomId,
@@ -20,6 +51,13 @@ export default function WhiteboardCanvas({
   const [zoom, setZoom] = useState(1);
   const [brushColor, setBrushColor] = useState("#252525");
   const [brushSize, setBrushSize] = useState(3);
+  const [noteColor, setNoteColor] = useState(NOTE_COLORS[0]);
+
+  const noteColorRef = useRef(noteColor);
+
+  useEffect(() => {
+    noteColorRef.current = noteColor;
+  }, [noteColor]);
 
   useEffect(() => {
     const element = canvasElementRef.current;
@@ -48,23 +86,149 @@ export default function WhiteboardCanvas({
     const brush = new PencilBrush(canvas);
     brush.width = 3;
     brush.color = "#252525";
-
     canvas.freeDrawingBrush = brush;
 
     let isPanning = false;
     let lastPointerX = 0;
     let lastPointerY = 0;
 
+    let isRestoring = false;
+    let saveTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    const saveBoard = () => {
+      if (isRestoring) return;
+
+      if (saveTimeout) {
+        clearTimeout(saveTimeout);
+      }
+
+      saveTimeout = setTimeout(() => {
+        persistBoard(canvas, roomId);
+      }, 300);
+    };
+
+    // Restore the saved board for this room.
+    const restoreBoard = async () => {
+      const storageKey = `brainstorm-space-board:${roomId}`;
+
+      try {
+        const saved = localStorage.getItem(storageKey);
+
+        if (!saved) return;
+
+        const savedState = JSON.parse(saved) as {
+          version?: number;
+          canvas?: Record<string, unknown>;
+          viewportTransform?: unknown;
+          zoom?: unknown;
+        };
+
+        if (!savedState.canvas || typeof savedState.canvas !== "object") {
+          return;
+        }
+
+        isRestoring = true;
+
+        await canvas.loadFromJSON(savedState.canvas);
+
+        const transform = savedState.viewportTransform;
+
+        if (
+          Array.isArray(transform) &&
+          transform.length === 6 &&
+          transform.every(
+            (value) => typeof value === "number" && Number.isFinite(value),
+          )
+        ) {
+          canvas.setViewportTransform(
+            transform as [number, number, number, number, number, number],
+          );
+        }
+
+        if (
+          typeof savedState.zoom === "number" &&
+          Number.isFinite(savedState.zoom)
+        ) {
+          setZoom(savedState.zoom);
+        }
+
+        canvas.requestRenderAll();
+      } catch (error) {
+        console.error("Failed to restore whiteboard:", error);
+      } finally {
+        isRestoring = false;
+      }
+    };
+
+    void restoreBoard();
+
     const eraseTarget = (target: unknown) => {
       if (!target || typeof target !== "object") return;
 
       const fabricTarget = target as FabricObject;
 
-      // Only remove freehand drawing paths.
+      // The eraser only removes freehand drawing paths.
       if (fabricTarget.type === "path") {
         canvas.remove(fabricTarget);
         canvas.requestRenderAll();
       }
+    };
+
+    const createStickyNote = (pointerEvent: MouseEvent) => {
+      const pointer = canvas.getScenePoint(pointerEvent);
+
+      const note = new Textbox("Add your idea...", {
+        left: pointer.x,
+        top: pointer.y,
+        width: 190,
+        fontSize: 17,
+        fontFamily: "Arial",
+        fontWeight: "normal",
+        fill: "#252525",
+        backgroundColor: noteColorRef.current,
+        padding: 16,
+        textAlign: "left",
+        editable: true,
+        selectable: true,
+        hasControls: true,
+        hasBorders: true,
+        cornerColor: "#7256A8",
+        borderColor: "#7256A8",
+        transparentCorners: false,
+        lockRotation: true,
+      });
+
+      canvas.add(note);
+      canvas.setActiveObject(note);
+      note.enterEditing();
+      note.selectAll();
+      canvas.requestRenderAll();
+    };
+
+    const createTextObject = (pointerEvent: MouseEvent) => {
+      const pointer = canvas.getScenePoint(pointerEvent);
+
+      const text = new IText("Type something...", {
+        left: pointer.x,
+        top: pointer.y,
+        fontSize: 24,
+        fontFamily: "Arial",
+        fill: "#252525",
+        editable: true,
+        selectable: true,
+        hasControls: true,
+        hasBorders: true,
+        cornerColor: "#7256A8",
+        borderColor: "#7256A8",
+        transparentCorners: false,
+        lockRotation: true,
+      });
+
+      canvas.add(text);
+      canvas.setActiveObject(text);
+      text.enterEditing();
+      text.selectAll();
+      canvas.requestRenderAll();
     };
 
     const handleMouseDown = (event: {
@@ -73,15 +237,29 @@ export default function WhiteboardCanvas({
     }) => {
       if (canvas.isDrawingMode) return;
 
-      // Eraser removes the stroke under the pointer.
-      if (activeToolRef.current === "erase") {
+      const pointerEvent = event.e as MouseEvent;
+      const currentTool = activeToolRef.current;
+
+      if (currentTool === "erase") {
         eraseTarget(event.target);
         return;
       }
 
+      if (currentTool === "note" && !event.target) {
+        createStickyNote(pointerEvent);
+        return;
+      }
+
+      if (currentTool === "text" && !event.target) {
+        createTextObject(pointerEvent);
+        return;
+      }
+
+      // Let Fabric handle clicks on existing objects.
       if (event.target) return;
 
-      const pointerEvent = event.e as MouseEvent;
+      // Only Select mode pans the canvas.
+      if (currentTool !== "select") return;
 
       isPanning = true;
       lastPointerX = pointerEvent.clientX;
@@ -120,12 +298,22 @@ export default function WhiteboardCanvas({
     };
 
     const handleMouseUp = () => {
+      if (isPanning) {
+        saveBoard();
+      }
+
       isPanning = false;
 
-      const tool = activeToolRef.current;
+      const currentTool = activeToolRef.current;
 
-      canvas.setCursor(tool === "select" ? "grab" : "crosshair");
+      const cursor =
+        currentTool === "select"
+          ? "grab"
+          : currentTool === "erase"
+            ? ERASER_CURSOR
+            : "crosshair";
 
+      canvas.setCursor(cursor);
       canvas.selection = false;
     };
 
@@ -146,12 +334,48 @@ export default function WhiteboardCanvas({
       canvas.zoomToPoint(new Point(pointer.x, pointer.y), nextZoom);
 
       setZoom(nextZoom);
+      saveBoard();
+    };
+
+    // Delete the currently selected note or text object.
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+
+      const target = event.target;
+
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      ) {
+        return;
+      }
+
+      const activeObject = canvas.getActiveObject();
+
+      if (!activeObject) return;
+
+      if (activeObject.type !== "textbox" && activeObject.type !== "i-text") {
+        return;
+      }
+
+      canvas.remove(activeObject);
+      canvas.discardActiveObject();
+      canvas.requestRenderAll();
     };
 
     canvas.on("mouse:down", handleMouseDown);
     canvas.on("mouse:move", handleMouseMove);
     canvas.on("mouse:up", handleMouseUp);
     canvas.on("mouse:wheel", handleMouseWheel);
+    // Automatically save changes to the board.
+    canvas.on("object:added", saveBoard);
+    canvas.on("object:modified", saveBoard);
+    canvas.on("object:removed", saveBoard);
+    canvas.on("path:created", saveBoard);
+    canvas.on("text:changed", saveBoard);
+
+    window.addEventListener("keydown", handleKeyDown);
 
     const resizeObserver = new ResizeObserver(() => {
       canvas.setDimensions({
@@ -166,17 +390,28 @@ export default function WhiteboardCanvas({
 
     return () => {
       resizeObserver.disconnect();
+      window.removeEventListener("keydown", handleKeyDown);
 
       canvas.off("mouse:down", handleMouseDown);
       canvas.off("mouse:move", handleMouseMove);
       canvas.off("mouse:up", handleMouseUp);
       canvas.off("mouse:wheel", handleMouseWheel);
 
+      if (saveTimeout) {
+        clearTimeout(saveTimeout);
+      }
+
+      canvas.off("object:added", saveBoard);
+      canvas.off("object:modified", saveBoard);
+      canvas.off("object:removed", saveBoard);
+      canvas.off("path:created", saveBoard);
+      canvas.off("text:changed", saveBoard);
+
       canvasRef.current = null;
 
       void canvas.dispose();
     };
-  }, []);
+  }, [roomId]);
 
   // Synchronize the selected toolbar tool with Fabric.js.
   useEffect(() => {
@@ -191,15 +426,23 @@ export default function WhiteboardCanvas({
     canvas.isDrawingMode = drawingEnabled;
     canvas.selection = false;
 
-    canvas.defaultCursor = activeTool === "select" ? "grab" : "crosshair";
+    const cursor =
+      activeTool === "select"
+        ? "grab"
+        : activeTool === "erase"
+          ? ERASER_CURSOR
+          : "crosshair";
 
-    canvas.hoverCursor = activeTool === "select" ? "default" : "crosshair";
+    canvas.defaultCursor = cursor;
+    canvas.hoverCursor = cursor;
+    canvas.freeDrawingCursor = cursor;
 
-    canvas.setCursor(activeTool === "select" ? "grab" : "crosshair");
+    canvas.setCursor(cursor);
+    canvas.upperCanvasEl.style.cursor = cursor;
+    canvas.wrapperEl.style.cursor = cursor;
 
     canvas.requestRenderAll();
   }, [activeTool]);
-
   const changeBrushColor = (color: string) => {
     const canvas = canvasRef.current;
 
@@ -235,6 +478,7 @@ export default function WhiteboardCanvas({
     canvas.zoomToPoint(center, nextZoom);
 
     setZoom(nextZoom);
+    persistBoard(canvas, roomId);
   };
 
   const resetZoom = () => {
@@ -245,6 +489,7 @@ export default function WhiteboardCanvas({
     canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
 
     setZoom(1);
+    persistBoard(canvas, roomId);
   };
 
   return (
@@ -263,6 +508,22 @@ export default function WhiteboardCanvas({
             aria-label="Choose drawing color"
           />
         </label>
+
+        {activeTool === "note" && (
+          <label
+            className="canvas-color-control"
+            title="Choose sticky note color"
+          >
+            <span className="canvas-color-label">Note</span>
+            <input
+              type="color"
+              value={noteColor}
+              onChange={(event) => setNoteColor(event.target.value)}
+              aria-label="Choose sticky note color"
+            />
+          </label>
+        )}
+
         <label className="canvas-brush-control" title="Adjust brush size">
           <span className="canvas-brush-label">Size</span>
 
@@ -278,6 +539,7 @@ export default function WhiteboardCanvas({
 
           <span className="canvas-brush-value">{brushSize}px</span>
         </label>
+
         <button
           type="button"
           className="canvas-control-button"

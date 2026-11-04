@@ -7,7 +7,12 @@ type BoardWorkspaceProps = {
   roomId: string;
 };
 
-export type WhiteboardTool = "select" | "draw" | "erase";
+export type WhiteboardTool =
+  | "select"
+  | "draw"
+  | "erase"
+  | "note"
+  | "text";
 
 export default function BoardWorkspace({ roomId }: BoardWorkspaceProps) {
   const [activeTool, setActiveTool] = useState<WhiteboardTool>("select");
@@ -20,7 +25,7 @@ export default function BoardWorkspace({ roomId }: BoardWorkspaceProps) {
           className={`board-tool-button ${
             activeTool === "select" ? "active" : ""
           }`}
-          title="Select and pan"
+          title="Select and move objects"
           aria-pressed={activeTool === "select"}
           onClick={() => setActiveTool("select")}
         >
@@ -58,9 +63,12 @@ export default function BoardWorkspace({ roomId }: BoardWorkspaceProps) {
 
         <button
           type="button"
-          className="board-tool-button"
-          disabled
-          title="Sticky notes coming in a later phase"
+          className={`board-tool-button ${
+            activeTool === "note" ? "active" : ""
+          }`}
+          title="Add a sticky note"
+          aria-pressed={activeTool === "note"}
+          onClick={() => setActiveTool("note")}
         >
           <span>▤</span>
           <span className="tool-label">Notes</span>
@@ -78,9 +86,12 @@ export default function BoardWorkspace({ roomId }: BoardWorkspaceProps) {
 
         <button
           type="button"
-          className="board-tool-button"
-          disabled
-          title="Text tool coming in a later phase"
+          className={`board-tool-button ${
+            activeTool === "text" ? "active" : ""
+          }`}
+          title="Add standalone text"
+          aria-pressed={activeTool === "text"}
+          onClick={() => setActiveTool("text")}
         >
           <span>T</span>
           <span className="tool-label">Text</span>
