@@ -2,6 +2,10 @@
 
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { useState } from "react";
+
+const API_URL =
+  process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
 
 const features = [
   {
@@ -103,10 +107,43 @@ function WhiteboardPreview() {
 export default function Home() {
   const router = useRouter();
 
-  function createBoard() {
-    const roomId = crypto.randomUUID();
-    router.push(`/board/${roomId}`);
+  const [isCreating, setIsCreating] = useState(false);
+
+async function createBoard() {
+  if (isCreating) return;
+
+  try {
+    setIsCreating(true);
+
+    const response = await fetch(`${API_URL}/api/rooms`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: "Untitled Board",
+      }),
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success || !result.data?.id) {
+      throw new Error(result.message || "Failed to create board");
+    }
+
+    router.push(`/board/${result.data.id}`);
+  } catch (error) {
+    console.error("Board creation error:", error);
+
+    alert(
+      error instanceof Error
+        ? error.message
+        : "Unable to create board. Please try again.",
+    );
+  } finally {
+    setIsCreating(false);
   }
+}
 
   return (
     <main className="home-page">
@@ -123,7 +160,7 @@ export default function Home() {
           <Link href="#how-it-works">How it works</Link>
         </div>
 
-        <button className="nav-cta" onClick={createBoard}>
+        <button className="nav-cta" onClick={createBoard} disabled={isCreating}>
           Create a board <span>↗</span>
         </button>
       </nav>
@@ -149,7 +186,7 @@ export default function Home() {
           </p>
 
           <div className="hero-actions">
-            <button className="primary-button" onClick={createBoard}>
+            <button className="primary-button" onClick={createBoard} disabled={isCreating}>
               Start brainstorming
               <span className="button-arrow">↗</span>
             </button>
@@ -228,7 +265,7 @@ export default function Home() {
           </p>
         </div>
 
-        <button className="primary-button" onClick={createBoard}>
+        <button className="primary-button" onClick={createBoard} disabled={isCreating}>
           Create your board <span className="button-arrow">↗</span>
         </button>
       </section>

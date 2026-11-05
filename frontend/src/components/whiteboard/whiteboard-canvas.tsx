@@ -16,6 +16,7 @@ import {
   Path,
 } from "fabric";
 import type { WhiteboardTool, ShapeType } from "./board-workspace";
+import { API_URL } from "@/lib/api";
 
 type WhiteboardCanvasProps = {
   roomId: string;
@@ -27,23 +28,47 @@ const NOTE_COLORS = ["#FFF2A8", "#FFD6D6", "#D9F2E6", "#DCE8FF", "#EADCF8"];
 const ERASER_CURSOR =
   "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cpath d='M7 18L16 5L25 11L16 24L7 18Z' fill='%23F2B8C6' stroke='%23252525' stroke-width='1.5'/%3E%3Cpath d='M7 18L16 24L12 28L3 22L7 18Z' fill='%23FFFFFF' stroke='%23252525' stroke-width='1.5'/%3E%3Cpath d='M12 28H25' stroke='%23252525' stroke-width='1.5'/%3E%3C/svg%3E\") 5 22, auto";
 
-function persistBoard(canvas: Canvas, roomId: string) {
-  try {
-    const boardState = {
-      version: 1,
-      canvas: canvas.toJSON(),
-      viewportTransform: canvas.viewportTransform
-        ? [...canvas.viewportTransform]
-        : [1, 0, 0, 1, 0, 0],
-      zoom: canvas.getZoom(),
-    };
+async function persistBoard(canvas: Canvas, roomId: string) {
+  const boardState = {
+    version: 1,
+    canvas: canvas.toJSON(),
+    viewportTransform: canvas.viewportTransform
+      ? [...canvas.viewportTransform]
+      : [1, 0, 0, 1, 0, 0],
+    zoom: canvas.getZoom(),
+  };
 
+  // Save locally first so the browser retains a backup.
+  try {
     localStorage.setItem(
       `brainstorm-space-board:${roomId}`,
       JSON.stringify(boardState),
     );
   } catch (error) {
-    console.error("Failed to save whiteboard:", error);
+    console.error("Failed to save whiteboard locally:", error);
+  }
+
+  // Synchronize the same board state with the backend.
+  try {
+    const response = await fetch(`${API_URL}/api/rooms/${roomId}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        boardData: boardState,
+      }),
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.message || "Cloud save failed");
+    }
+
+    console.log("Whiteboard saved to database.");
+  } catch (error) {
+    console.error("Failed to save whiteboard to cloud:", error);
   }
 }
 
@@ -116,6 +141,7 @@ export default function WhiteboardCanvas({
     let shapeStartPoint: Point | null = null;
 
     let isRestoring = false;
+    let isDisposed = false;
     let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 
     const saveBoard = () => {
@@ -134,27 +160,66 @@ export default function WhiteboardCanvas({
     const restoreBoard = async () => {
       const storageKey = `brainstorm-space-board:${roomId}`;
 
+      isRestoring = true;
+
       try {
-        const saved = localStorage.getItem(storageKey);
-
-        if (!saved) return;
-
-        const savedState = JSON.parse(saved) as {
+        let boardState: {
           version?: number;
           canvas?: Record<string, unknown>;
           viewportTransform?: unknown;
           zoom?: unknown;
-        };
+        } | null = null;
 
-        if (!savedState.canvas || typeof savedState.canvas !== "object") {
+        let restoredFromLocalStorage = false;
+
+        // 1. Try loading the latest board from the database.
+        try {
+          const response = await fetch(`${API_URL}/api/rooms/${roomId}`);
+
+          const result = await response.json();
+
+          if (!response.ok || !result.success) {
+            throw new Error(result.message || "Failed to load room");
+          }
+
+          const serverBoard = result.data?.boardData;
+
+          if (
+            serverBoard &&
+            typeof serverBoard === "object" &&
+            serverBoard.canvas &&
+            typeof serverBoard.canvas === "object"
+          ) {
+            boardState = serverBoard;
+          }
+        } catch (error) {
+          console.error("Failed to load board from cloud:", error);
+        }
+        if (isDisposed) return;
+
+        // 2. Fall back to localStorage if the database has no saved board.
+        if (!boardState) {
+          const saved = localStorage.getItem(storageKey);
+
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            if (parsed?.canvas && typeof parsed.canvas === "object") {
+              boardState = parsed;
+              restoredFromLocalStorage = true;
+            }
+          }
+        }
+
+        // 3. Restore the selected board state.
+        if (isDisposed || !boardState?.canvas) {
           return;
         }
 
-        isRestoring = true;
+        await canvas.loadFromJSON(boardState.canvas);
 
-        await canvas.loadFromJSON(savedState.canvas);
+        if (isDisposed) return;
 
-        const transform = savedState.viewportTransform;
+        const transform = boardState.viewportTransform;
 
         if (
           Array.isArray(transform) &&
@@ -169,13 +234,25 @@ export default function WhiteboardCanvas({
         }
 
         if (
-          typeof savedState.zoom === "number" &&
-          Number.isFinite(savedState.zoom)
+          typeof boardState.zoom === "number" &&
+          Number.isFinite(boardState.zoom)
         ) {
-          setZoom(savedState.zoom);
+          setZoom(boardState.zoom);
         }
 
         canvas.requestRenderAll();
+
+        // 4. Keep localStorage synchronized with the restored state.
+        if (boardState) {
+          localStorage.setItem(storageKey, JSON.stringify(boardState));
+        }
+
+        if (restoredFromLocalStorage && !isDisposed) {
+          console.log("Migrating local board data to the database...");
+          await persistBoard(canvas, roomId);
+        }
+
+        console.log("Whiteboard restored successfully.");
       } catch (error) {
         console.error("Failed to restore whiteboard:", error);
       } finally {
@@ -617,6 +694,8 @@ export default function WhiteboardCanvas({
     resizeObserver.observe(wrapper);
 
     return () => {
+      isDisposed = true;
+
       resizeObserver.disconnect();
       window.removeEventListener("keydown", handleKeyDown);
 
