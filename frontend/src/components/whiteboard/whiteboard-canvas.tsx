@@ -17,6 +17,7 @@ import {
 } from "fabric";
 import type { WhiteboardTool, ShapeType } from "./board-workspace";
 import { API_URL } from "@/lib/api";
+import { socket } from "@/lib/socket";
 
 type WhiteboardCanvasProps = {
   roomId: string;
@@ -141,19 +142,109 @@ export default function WhiteboardCanvas({
     let shapeStartPoint: Point | null = null;
 
     let isRestoring = false;
+    let isApplyingRemoteChanges = false;
     let isDisposed = false;
     let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 
     const saveBoard = () => {
-      if (isRestoring) return;
+      if (isRestoring || isApplyingRemoteChanges || isDisposed) return;
 
       if (saveTimeout) {
         clearTimeout(saveTimeout);
       }
 
       saveTimeout = setTimeout(() => {
-        persistBoard(canvas, roomId);
+        if (isDisposed || isApplyingRemoteChanges) return;
+
+        const boardState = {
+          version: 1,
+          canvas: canvas.toJSON(),
+          viewportTransform: canvas.viewportTransform
+            ? [...canvas.viewportTransform]
+            : [1, 0, 0, 1, 0, 0],
+          zoom: canvas.getZoom(),
+        };
+
+        // Save locally and to PostgreSQL.
+        void persistBoard(canvas, roomId);
+
+        // Broadcast the latest board state to other room participants.
+        if (socket.connected) {
+          socket.emit("board-update", {
+            roomId,
+            boardState,
+          });
+        }
       }, 300);
+    };
+
+    // Apply board updates received from other participants.
+    const handleRemoteBoardUpdate = async (payload: {
+      boardState?: unknown;
+    }) => {
+      const boardState = payload?.boardState;
+
+      if (
+        !boardState ||
+        typeof boardState !== "object" ||
+        Array.isArray(boardState)
+      ) {
+        return;
+      }
+
+      const state = boardState as {
+        canvas?: Record<string, unknown>;
+        viewportTransform?: unknown;
+        zoom?: unknown;
+      };
+
+      if (!state.canvas || typeof state.canvas !== "object") {
+        return;
+      }
+
+      if (saveTimeout) {
+        clearTimeout(saveTimeout);
+        saveTimeout = null;
+      }
+
+      isApplyingRemoteChanges = true;
+
+      try {
+        await canvas.loadFromJSON(state.canvas);
+
+        if (isDisposed) return;
+
+        const transform = state.viewportTransform;
+
+        if (
+          Array.isArray(transform) &&
+          transform.length === 6 &&
+          transform.every(
+            (value) => typeof value === "number" && Number.isFinite(value),
+          )
+        ) {
+          canvas.setViewportTransform(
+            transform as [number, number, number, number, number, number],
+          );
+        }
+
+        if (typeof state.zoom === "number" && Number.isFinite(state.zoom)) {
+          setZoom(state.zoom);
+        }
+
+        canvas.requestRenderAll();
+
+        localStorage.setItem(
+          `brainstorm-space-board:${roomId}`,
+          JSON.stringify(state),
+        );
+
+        console.log("Remote whiteboard update received.");
+      } catch (error) {
+        console.error("Failed to apply remote board update:", error);
+      } finally {
+        isApplyingRemoteChanges = false;
+      }
     };
 
     // Restore the saved board for this room.
@@ -260,7 +351,16 @@ export default function WhiteboardCanvas({
       }
     };
 
-    void restoreBoard();
+    void restoreBoard().then(() => {
+      if (isDisposed) return;
+
+      socket.on("board-update", handleRemoteBoardUpdate);
+
+      socket.connect();
+      socket.emit("join-room", roomId);
+
+      console.log(`Connected to whiteboard room: ${roomId}`);
+    });
 
     const eraseTarget = (target: unknown) => {
       if (!target || typeof target !== "object") return;
@@ -695,6 +795,9 @@ export default function WhiteboardCanvas({
 
     return () => {
       isDisposed = true;
+      socket.off("board-update", handleRemoteBoardUpdate);
+      socket.emit("leave-room", roomId);
+      socket.disconnect();
 
       resizeObserver.disconnect();
       window.removeEventListener("keydown", handleKeyDown);
