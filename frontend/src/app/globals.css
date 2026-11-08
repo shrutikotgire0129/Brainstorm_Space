@@ -1498,3 +1498,86 @@ a {
   font-size: 27px;
   line-height: 1;
 }
+
+
+/* Participant presence */
+.participant-presence {
+  position: absolute;
+  top: 20px;
+  right: 22px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 13px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid #e8e3f0;
+  border-radius: 14px;
+  box-shadow: 0 3px 12px rgba(40, 30, 60, 0.08);
+}
+
+.participant-count {
+  color: #625773;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.participant-avatar-list {
+  display: flex;
+  align-items: center;
+  padding-left: 4px;
+}
+
+.participant-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  margin-left: -4px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+/* Remote participant cursors */
+.remote-cursor-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.remote-cursor {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  transform: translate(-2px, -2px);
+  pointer-events: none;
+  transition:
+    left 40ms linear,
+    top 40ms linear;
+}
+
+.remote-cursor svg {
+  flex-shrink: 0;
+}
+
+.remote-cursor-label {
+  margin-left: 12px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.15);
+}

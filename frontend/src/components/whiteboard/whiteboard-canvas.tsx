@@ -18,11 +18,25 @@ import {
 import type { WhiteboardTool, ShapeType } from "./board-workspace";
 import { API_URL } from "@/lib/api";
 import { socket } from "@/lib/socket";
+import { getParticipantIdentity } from "@/lib/participant";
 
 type WhiteboardCanvasProps = {
   roomId: string;
   activeTool: WhiteboardTool;
   selectedShape: ShapeType;
+};
+
+type RoomParticipant = {
+  id: string;
+  name: string;
+  color: string;
+  socketId: string;
+};
+
+type RemoteCursor = {
+  socketId: string;
+  x: number;
+  y: number;
 };
 
 const NOTE_COLORS = ["#FFF2A8", "#FFD6D6", "#D9F2E6", "#DCE8FF", "#EADCF8"];
@@ -90,11 +104,12 @@ export default function WhiteboardCanvas({
   const [shapeFill, setShapeFill] = useState("#F3EFF9");
   const [shapeStroke, setShapeStroke] = useState("#7256A8");
   const [shapeStrokeWidth, setShapeStrokeWidth] = useState(2);
+  const [participants, setParticipants] = useState<RoomParticipant[]>([]);
+  const [remoteCursors, setRemoteCursors] = useState<RemoteCursor[]>([]);
 
   const shapeFillRef = useRef(shapeFill);
   const shapeStrokeRef = useRef(shapeStroke);
   const shapeStrokeWidthRef = useRef(shapeStrokeWidth);
-
   const noteColorRef = useRef(noteColor);
 
   useEffect(() => {
@@ -146,6 +161,34 @@ export default function WhiteboardCanvas({
     let isDisposed = false;
     let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 
+    let lastCursorEmitTime = 0;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (!socket.connected || isDisposed) return;
+
+      const now = Date.now();
+
+      // Limit cursor broadcasts to approximately 30 updates per second.
+      if (now - lastCursorEmitTime < 33) return;
+
+      lastCursorEmitTime = now;
+
+      const bounds = wrapper.getBoundingClientRect();
+
+      if (!bounds.width || !bounds.height) return;
+
+      const x = (event.clientX - bounds.left) / bounds.width;
+      const y = (event.clientY - bounds.top) / bounds.height;
+
+      if (x < 0 || x > 1 || y < 0 || y > 1) return;
+
+      socket.emit("cursor-move", {
+        roomId,
+        x,
+        y,
+      });
+    };
+
     const saveBoard = () => {
       if (isRestoring || isApplyingRemoteChanges || isDisposed) return;
 
@@ -176,6 +219,53 @@ export default function WhiteboardCanvas({
           });
         }
       }, 300);
+    };
+
+    const handlePresenceUpdate = (updatedParticipants: RoomParticipant[]) => {
+      if (!Array.isArray(updatedParticipants)) return;
+
+      setParticipants(updatedParticipants);
+
+      // Remove cursors belonging to participants who have left.
+      const activeSocketIds = new Set(
+        updatedParticipants.map((participant) => participant.socketId),
+      );
+
+      setRemoteCursors((currentCursors) =>
+        currentCursors.filter((cursor) => activeSocketIds.has(cursor.socketId)),
+      );
+    };
+
+    // Receive cursor positions from other participants.
+    const handleCursorUpdate = (cursor: RemoteCursor) => {
+      if (
+        !cursor ||
+        typeof cursor.socketId !== "string" ||
+        typeof cursor.x !== "number" ||
+        typeof cursor.y !== "number" ||
+        !Number.isFinite(cursor.x) ||
+        !Number.isFinite(cursor.y) ||
+        cursor.x < 0 ||
+        cursor.x > 1 ||
+        cursor.y < 0 ||
+        cursor.y > 1
+      ) {
+        return;
+      }
+
+      setRemoteCursors((currentCursors) => {
+        const existing = currentCursors.find(
+          (item) => item.socketId === cursor.socketId,
+        );
+
+        if (existing) {
+          return currentCursors.map((item) =>
+            item.socketId === cursor.socketId ? cursor : item,
+          );
+        }
+
+        return [...currentCursors, cursor];
+      });
     };
 
     // Apply board updates received from other participants.
@@ -351,15 +441,32 @@ export default function WhiteboardCanvas({
       }
     };
 
+    const handleSocketConnect = () => {
+      if (isDisposed) return;
+
+      const participant = getParticipantIdentity();
+
+      socket.emit("join-room", {
+        roomId,
+        participant,
+      });
+
+      console.log(`Connected to whiteboard room: ${roomId}`);
+    };
+
     void restoreBoard().then(() => {
       if (isDisposed) return;
 
       socket.on("board-update", handleRemoteBoardUpdate);
+      socket.on("presence-update", handlePresenceUpdate);
+      socket.on("cursor-update", handleCursorUpdate);
+      socket.on("connect", handleSocketConnect);
 
-      socket.connect();
-      socket.emit("join-room", roomId);
-
-      console.log(`Connected to whiteboard room: ${roomId}`);
+      if (socket.connected) {
+        handleSocketConnect();
+      } else {
+        socket.connect();
+      }
     });
 
     const eraseTarget = (target: unknown) => {
@@ -781,6 +888,7 @@ export default function WhiteboardCanvas({
     canvas.on("text:changed", saveBoard);
 
     window.addEventListener("keydown", handleKeyDown);
+    wrapper.addEventListener("pointermove", handlePointerMove);
 
     const resizeObserver = new ResizeObserver(() => {
       canvas.setDimensions({
@@ -795,12 +903,21 @@ export default function WhiteboardCanvas({
 
     return () => {
       isDisposed = true;
+
       socket.off("board-update", handleRemoteBoardUpdate);
-      socket.emit("leave-room", roomId);
+      socket.off("presence-update", handlePresenceUpdate);
+      socket.off("cursor-update", handleCursorUpdate);
+      socket.off("connect", handleSocketConnect);
+
+      if (socket.connected) {
+        socket.emit("leave-room", roomId);
+      }
+
       socket.disconnect();
 
       resizeObserver.disconnect();
       window.removeEventListener("keydown", handleKeyDown);
+      wrapper.removeEventListener("pointermove", handlePointerMove);
 
       canvas.off("mouse:down", handleMouseDown);
       canvas.off("mouse:move", handleMouseMove);
@@ -949,8 +1066,71 @@ export default function WhiteboardCanvas({
 
   return (
     <section className="whiteboard-workspace">
+      <div className="participant-presence">
+        <span className="participant-count">{participants.length} online</span>
+
+        <div className="participant-avatar-list">
+          {participants.map((participant) => (
+            <div
+              key={participant.socketId}
+              className="participant-avatar"
+              style={{ backgroundColor: participant.color }}
+              title={participant.name}
+              aria-label={participant.name}
+            >
+              {participant.name.slice(0, 1).toUpperCase()}
+            </div>
+          ))}
+        </div>
+      </div>
+
       <div className="whiteboard-canvas-wrapper">
         <canvas ref={canvasElementRef} />
+
+        <div className="remote-cursor-layer">
+          {remoteCursors.map((cursor) => {
+            const participant = participants.find(
+              (item) => item.socketId === cursor.socketId,
+            );
+
+            if (!participant) return null;
+
+            return (
+              <div
+                key={cursor.socketId}
+                className="remote-cursor"
+                style={{
+                  left: `${cursor.x * 100}%`,
+                  top: `${cursor.y * 100}%`,
+                  color: participant.color,
+                }}
+              >
+                <svg
+                  width="20"
+                  height="24"
+                  viewBox="0 0 20 24"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M2 2L2 19L7 14L11 22L14 20L10 12L17 12L2 2Z"
+                    fill={participant.color}
+                    stroke="white"
+                    strokeWidth="1.5"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+
+                <span
+                  className="remote-cursor-label"
+                  style={{ backgroundColor: participant.color }}
+                >
+                  {participant.name}
+                </span>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       <div className="canvas-controls">

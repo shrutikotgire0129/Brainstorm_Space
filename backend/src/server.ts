@@ -1,4 +1,3 @@
-
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -14,8 +13,7 @@ const httpServer = createServer(app);
 
 const PORT = Number(process.env.PORT) || 5000;
 
-const FRONTEND_URL =
-  process.env.FRONTEND_URL || "http://localhost:3000";
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
 
 // Socket.IO configuration
 const io = new Server(httpServer, {
@@ -31,7 +29,7 @@ app.use(
   cors({
     origin: FRONTEND_URL,
     credentials: true,
-  })
+  }),
 );
 
 app.use(express.json({ limit: "1mb" }));
@@ -48,20 +46,77 @@ app.get("/api/health", (_req, res) => {
 // Room routes
 app.use("/api/rooms", roomRoutes);
 
+type Participant = {
+  id: string;
+  name: string;
+  color: string;
+};
+
+type RoomParticipant = Participant & {
+  socketId: string;
+};
+
+const participantsByRoom = new Map<string, Map<string, RoomParticipant>>();
+
+const broadcastPresence = (roomId: string) => {
+  const participants = Array.from(
+    participantsByRoom.get(roomId)?.values() ?? [],
+  );
+
+  io.to(roomId).emit("presence-update", participants);
+};
+
+const removeParticipant = (socketId: string, roomId: string) => {
+  const roomParticipants = participantsByRoom.get(roomId);
+
+  if (!roomParticipants) return;
+
+  roomParticipants.delete(socketId);
+
+  if (roomParticipants.size === 0) {
+    participantsByRoom.delete(roomId);
+  }
+
+  broadcastPresence(roomId);
+};
+
 // Socket.IO connection handling
+
 io.on("connection", (socket) => {
   console.log(`Socket connected: ${socket.id}`);
 
-  // Join an existing whiteboard room.
-  socket.on("join-room", async (roomId: unknown) => {
+  let currentRoomId: string | null = null;
+
+  socket.on("join-room", async (payload: unknown) => {
     try {
+      if (!payload || typeof payload !== "object") return;
+
+      const { roomId, participant } = payload as {
+        roomId?: unknown;
+        participant?: unknown;
+      };
+
       if (
         typeof roomId !== "string" ||
         !roomId.trim() ||
-        roomId.length > 64
-      ) {
+        roomId.length > 64 ||
+        !participant ||
+        typeof participant !== "object"
+      )
         return;
-      }
+
+      const candidate = participant as Record<string, unknown>;
+
+      if (
+        typeof candidate.id !== "string" ||
+        !/^[0-9a-f-]{36}$/i.test(candidate.id) ||
+        typeof candidate.name !== "string" ||
+        !candidate.name.trim() ||
+        candidate.name.length > 32 ||
+        typeof candidate.color !== "string" ||
+        !/^#[0-9a-f]{6}$/i.test(candidate.color)
+      )
+        return;
 
       const room = await prisma.room.findUnique({
         where: { id: roomId },
@@ -75,24 +130,55 @@ io.on("connection", (socket) => {
         return;
       }
 
-      socket.join(roomId);
-      console.log(`Socket ${socket.id} joined room ${roomId}`);
+      // Remove the participant from their previous room, if necessary.
+      if (currentRoomId && currentRoomId !== roomId) {
+        socket.leave(currentRoomId);
+        removeParticipant(socket.id, currentRoomId);
+      }
+
+      await socket.join(roomId);
+      currentRoomId = roomId;
+
+      const roomParticipants = participantsByRoom.get(roomId) ?? new Map();
+
+      roomParticipants.set(socket.id, {
+        socketId: socket.id,
+        id: candidate.id,
+        name: candidate.name.trim(),
+        color: candidate.color,
+      });
+
+      participantsByRoom.set(roomId, roomParticipants);
+
+      broadcastPresence(roomId);
+
+      console.log(
+        `Socket ${socket.id} joined room ${roomId} as ${candidate.name}`,
+      );
     } catch (error) {
       console.error("Failed to join room:", error);
     }
   });
 
-  // Leave a whiteboard room.
   socket.on("leave-room", (roomId: unknown) => {
-    if (typeof roomId !== "string" || !roomId.trim()) {
+    if (
+      typeof roomId !== "string" ||
+      !roomId.trim() ||
+      roomId.length > 64 ||
+      !socket.rooms.has(roomId)
+    )
       return;
-    }
 
     socket.leave(roomId);
+    removeParticipant(socket.id, roomId);
+
+    if (currentRoomId === roomId) {
+      currentRoomId = null;
+    }
+
     console.log(`Socket ${socket.id} left room ${roomId}`);
   });
 
-  // Broadcast board changes to other participants.
   socket.on(
     "board-update",
     (payload: { roomId?: unknown; boardState?: unknown }) => {
@@ -107,34 +193,71 @@ io.on("connection", (socket) => {
           !boardState ||
           typeof boardState !== "object" ||
           Array.isArray(boardState)
-        ) {
+        )
           return;
-        }
 
         const serializedState = JSON.stringify(boardState);
 
-        if (serializedState.length > 900_000) {
-          return;
-        }
+        if (serializedState.length > 900_000) return;
 
-        socket.to(roomId).emit("board-update", {
-          boardState,
-        });
+        socket.to(roomId).emit("board-update", { boardState });
       } catch (error) {
         console.error("Failed to broadcast board update:", error);
       }
     },
   );
 
+  // Broadcast live cursor positions to other participants in the room.
+  socket.on("cursor-move", (payload: unknown) => {
+    try {
+      if (!payload || typeof payload !== "object") return;
+
+      const { roomId, x, y } = payload as {
+        roomId?: unknown;
+        x?: unknown;
+        y?: unknown;
+      };
+
+      if (
+        typeof roomId !== "string" ||
+        !roomId.trim() ||
+        roomId.length > 64 ||
+        !socket.rooms.has(roomId) ||
+        currentRoomId !== roomId ||
+        typeof x !== "number" ||
+        typeof y !== "number" ||
+        !Number.isFinite(x) ||
+        !Number.isFinite(y) ||
+        x < 0 ||
+        x > 1 ||
+        y < 0 ||
+        y > 1
+      ) {
+        return;
+      }
+
+      socket.to(roomId).emit("cursor-update", {
+        socketId: socket.id,
+        x,
+        y,
+      });
+    } catch (error) {
+      console.error("Failed to broadcast cursor position:", error);
+    }
+  });
+
   socket.on("disconnect", (reason) => {
+    if (currentRoomId) {
+      removeParticipant(socket.id, currentRoomId);
+      currentRoomId = null;
+    }
+
     console.log(`Socket disconnected: ${socket.id} (${reason})`);
   });
 });
 
 // Start HTTP and Socket.IO server
 httpServer.listen(PORT, () => {
-  console.log(
-    `Brainstorm Space API running on http://localhost:${PORT}`
-  );
+  console.log(`Brainstorm Space API running on http://localhost:${PORT}`);
   console.log("Socket.IO server is ready.");
 });
