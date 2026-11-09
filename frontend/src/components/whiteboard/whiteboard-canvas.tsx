@@ -43,8 +43,8 @@ const NOTE_COLORS = ["#FFF2A8", "#FFD6D6", "#D9F2E6", "#DCE8FF", "#EADCF8"];
 const ERASER_CURSOR =
   "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cpath d='M7 18L16 5L25 11L16 24L7 18Z' fill='%23F2B8C6' stroke='%23252525' stroke-width='1.5'/%3E%3Cpath d='M7 18L16 24L12 28L3 22L7 18Z' fill='%23FFFFFF' stroke='%23252525' stroke-width='1.5'/%3E%3Cpath d='M12 28H25' stroke='%23252525' stroke-width='1.5'/%3E%3C/svg%3E\") 5 22, auto";
 
-async function persistBoard(canvas: Canvas, roomId: string) {
-  const boardState = {
+function createBoardState(canvas: Canvas) {
+  return {
     version: 1,
     canvas: canvas.toJSON(),
     viewportTransform: canvas.viewportTransform
@@ -52,7 +52,11 @@ async function persistBoard(canvas: Canvas, roomId: string) {
       : [1, 0, 0, 1, 0, 0],
     zoom: canvas.getZoom(),
   };
+}
 
+type BoardState = ReturnType<typeof createBoardState>;
+
+async function persistBoard(roomId: string, boardState: BoardState) {
   // Save locally first so the browser retains a backup.
   try {
     localStorage.setItem(
@@ -94,6 +98,43 @@ export default function WhiteboardCanvas({
 }: WhiteboardCanvasProps) {
   const canvasElementRef = useRef<HTMLCanvasElement>(null);
   const canvasRef = useRef<Canvas | null>(null);
+  const saveInProgressRef = useRef(false);
+  const pendingBoardStateRef = useRef<BoardState | null>(null);
+
+  const saveLatestBoard = async (boardState: BoardState) => {
+    // Preserve only the newest pending state.
+    if (saveInProgressRef.current) {
+      pendingBoardStateRef.current = boardState;
+
+      try {
+        localStorage.setItem(
+          `brainstorm-space-board:${roomId}`,
+          JSON.stringify(boardState),
+        );
+      } catch (error) {
+        console.error("Failed to save whiteboard locally:", error);
+      }
+
+      return;
+    }
+
+    saveInProgressRef.current = true;
+
+    let stateToSave: BoardState | null = boardState;
+
+    try {
+      while (stateToSave) {
+        pendingBoardStateRef.current = null;
+
+        await persistBoard(roomId, stateToSave);
+
+        // Save the newest state if changes occurred during the request.
+        stateToSave = pendingBoardStateRef.current;
+      }
+    } finally {
+      saveInProgressRef.current = false;
+    }
+  };
   const activeToolRef = useRef<WhiteboardTool>(activeTool);
   const selectedShapeRef = useRef<ShapeType>(selectedShape);
 
@@ -197,19 +238,14 @@ export default function WhiteboardCanvas({
       }
 
       saveTimeout = setTimeout(() => {
+        saveTimeout = null;
+
         if (isDisposed || isApplyingRemoteChanges) return;
 
-        const boardState = {
-          version: 1,
-          canvas: canvas.toJSON(),
-          viewportTransform: canvas.viewportTransform
-            ? [...canvas.viewportTransform]
-            : [1, 0, 0, 1, 0, 0],
-          zoom: canvas.getZoom(),
-        };
+        const boardState = createBoardState(canvas);
 
-        // Save locally and to PostgreSQL.
-        void persistBoard(canvas, roomId);
+        // Save locally and serialize cloud saves.
+        void saveLatestBoard(boardState);
 
         // Broadcast the latest board state to other room participants.
         if (socket.connected) {
@@ -430,7 +466,7 @@ export default function WhiteboardCanvas({
 
         if (restoredFromLocalStorage && !isDisposed) {
           console.log("Migrating local board data to the database...");
-          await persistBoard(canvas, roomId);
+          await persistBoard(roomId, createBoardState(canvas));
         }
 
         console.log("Whiteboard restored successfully.");
@@ -926,6 +962,13 @@ export default function WhiteboardCanvas({
 
       if (saveTimeout) {
         clearTimeout(saveTimeout);
+        saveTimeout = null;
+
+        // Flush the latest canvas state before disposing the canvas.
+        if (!isRestoring && !isApplyingRemoteChanges) {
+          const boardState = createBoardState(canvas);
+          void saveLatestBoard(boardState);
+        }
       }
 
       canvas.off("object:added", saveBoard);
@@ -1001,7 +1044,7 @@ export default function WhiteboardCanvas({
       }
 
       canvas.requestRenderAll();
-      persistBoard(canvas, roomId);
+      void saveLatestBoard(createBoardState(canvas));
     }
   };
 
@@ -1015,7 +1058,7 @@ export default function WhiteboardCanvas({
     if (canvas && activeObject) {
       activeObject.set("stroke", color);
       canvas.requestRenderAll();
-      persistBoard(canvas, roomId);
+      void saveLatestBoard(createBoardState(canvas));
     }
   };
 
@@ -1029,7 +1072,7 @@ export default function WhiteboardCanvas({
     if (canvas && activeObject) {
       activeObject.set("strokeWidth", width);
       canvas.requestRenderAll();
-      persistBoard(canvas, roomId);
+      void saveLatestBoard(createBoardState(canvas));
     }
   };
 
@@ -1050,7 +1093,7 @@ export default function WhiteboardCanvas({
     canvas.zoomToPoint(center, nextZoom);
 
     setZoom(nextZoom);
-    persistBoard(canvas, roomId);
+    void saveLatestBoard(createBoardState(canvas));
   };
 
   const resetZoom = () => {
@@ -1061,7 +1104,7 @@ export default function WhiteboardCanvas({
     canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
 
     setZoom(1);
-    persistBoard(canvas, roomId);
+    void saveLatestBoard(createBoardState(canvas));
   };
 
   return (
