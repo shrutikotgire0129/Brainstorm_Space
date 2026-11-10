@@ -57,17 +57,22 @@ function createBoardState(canvas: Canvas) {
 type BoardState = ReturnType<typeof createBoardState>;
 
 async function persistBoard(roomId: string, boardState: BoardState) {
-  // Save locally first so the browser retains a backup.
+  const storageKey = `brainstorm-space-board:${roomId}`;
+  const pendingKey = `brainstorm-space-pending:${roomId}`;
+
+  // Preserve the latest board locally before attempting cloud synchronization.
   try {
-    localStorage.setItem(
-      `brainstorm-space-board:${roomId}`,
-      JSON.stringify(boardState),
-    );
+    localStorage.setItem(storageKey, JSON.stringify(boardState));
+    localStorage.setItem(pendingKey, "true");
   } catch (error) {
     console.error("Failed to save whiteboard locally:", error);
   }
 
-  // Synchronize the same board state with the backend.
+  // Do not attempt a cloud save while offline.
+  if (!navigator.onLine) {
+    throw new Error("Device is offline. Board saved locally.");
+  }
+
   try {
     const response = await fetch(`${API_URL}/api/rooms/${roomId}`, {
       method: "PUT",
@@ -85,9 +90,13 @@ async function persistBoard(roomId: string, boardState: BoardState) {
       throw new Error(result.message || "Cloud save failed");
     }
 
+    // Clear the pending marker only after a successful database save.
+    localStorage.removeItem(pendingKey);
+
     console.log("Whiteboard saved to database.");
   } catch (error) {
     console.error("Failed to save whiteboard to cloud:", error);
+    throw error;
   }
 }
 
@@ -102,7 +111,7 @@ export default function WhiteboardCanvas({
   const pendingBoardStateRef = useRef<BoardState | null>(null);
 
   const saveLatestBoard = async (boardState: BoardState) => {
-    // Preserve only the newest pending state.
+    // If another save is running, keep only the newest pending state.
     if (saveInProgressRef.current) {
       pendingBoardStateRef.current = boardState;
 
@@ -119,22 +128,45 @@ export default function WhiteboardCanvas({
     }
 
     saveInProgressRef.current = true;
-
     let stateToSave: BoardState | null = boardState;
 
     try {
       while (stateToSave) {
         pendingBoardStateRef.current = null;
 
-        await persistBoard(roomId, stateToSave);
+        try {
+          await persistBoard(roomId, stateToSave);
+        } catch (error) {
+          // Preserve the failed state unless a newer state is already queued.
+          pendingBoardStateRef.current ??= stateToSave;
 
-        // Save the newest state if changes occurred during the request.
+          console.error(
+            "Whiteboard synchronization is pending. It will be retried when the connection is restored.",
+            error,
+          );
+
+          break;
+        }
+
         stateToSave = pendingBoardStateRef.current;
       }
     } finally {
       saveInProgressRef.current = false;
     }
   };
+
+  const retryPendingSave = () => {
+    if (!navigator.onLine || saveInProgressRef.current) {
+      return;
+    }
+
+    const pendingBoardState = pendingBoardStateRef.current;
+
+    if (pendingBoardState) {
+      void saveLatestBoard(pendingBoardState);
+    }
+  };
+
   const activeToolRef = useRef<WhiteboardTool>(activeTool);
   const selectedShapeRef = useRef<ShapeType>(selectedShape);
 
@@ -376,6 +408,7 @@ export default function WhiteboardCanvas({
     // Restore the saved board for this room.
     const restoreBoard = async () => {
       const storageKey = `brainstorm-space-board:${roomId}`;
+      const pendingKey = `brainstorm-space-pending:${roomId}`;
 
       isRestoring = true;
 
@@ -389,40 +422,72 @@ export default function WhiteboardCanvas({
 
         let restoredFromLocalStorage = false;
 
-        // 1. Try loading the latest board from the database.
-        try {
-          const response = await fetch(`${API_URL}/api/rooms/${roomId}`);
+        // 1. Check whether a previous cloud save is still pending.
+        const hasPendingSave = localStorage.getItem(pendingKey) === "true";
 
-          const result = await response.json();
+        if (hasPendingSave) {
+          const saved = localStorage.getItem(storageKey);
 
-          if (!response.ok || !result.success) {
-            throw new Error(result.message || "Failed to load room");
+          if (saved) {
+            try {
+              const parsed = JSON.parse(saved);
+
+              if (parsed?.canvas && typeof parsed.canvas === "object") {
+                boardState = parsed;
+                restoredFromLocalStorage = true;
+
+                console.log(
+                  "Restoring unsynchronized local whiteboard changes.",
+                );
+              }
+            } catch (error) {
+              console.error("Failed to parse pending local board:", error);
+            }
           }
-
-          const serverBoard = result.data?.boardData;
-
-          if (
-            serverBoard &&
-            typeof serverBoard === "object" &&
-            serverBoard.canvas &&
-            typeof serverBoard.canvas === "object"
-          ) {
-            boardState = serverBoard;
-          }
-        } catch (error) {
-          console.error("Failed to load board from cloud:", error);
         }
+
+        // 2. Load from the database only if there is no valid pending local state.
+        if (!boardState) {
+          try {
+            const response = await fetch(`${API_URL}/api/rooms/${roomId}`);
+
+            const result = await response.json();
+
+            if (!response.ok || !result.success) {
+              throw new Error(result.message || "Failed to load room");
+            }
+
+            const serverBoard = result.data?.boardData;
+
+            if (
+              serverBoard &&
+              typeof serverBoard === "object" &&
+              serverBoard.canvas &&
+              typeof serverBoard.canvas === "object"
+            ) {
+              boardState = serverBoard;
+            }
+          } catch (error) {
+            console.error("Failed to load board from cloud:", error);
+          }
+        }
+
         if (isDisposed) return;
 
-        // 2. Fall back to localStorage if the database has no saved board.
+        // 3. Fall back to localStorage if the database has no saved board.
         if (!boardState) {
           const saved = localStorage.getItem(storageKey);
 
           if (saved) {
-            const parsed = JSON.parse(saved);
-            if (parsed?.canvas && typeof parsed.canvas === "object") {
-              boardState = parsed;
-              restoredFromLocalStorage = true;
+            try {
+              const parsed = JSON.parse(saved);
+
+              if (parsed?.canvas && typeof parsed.canvas === "object") {
+                boardState = parsed;
+                restoredFromLocalStorage = true;
+              }
+            } catch (error) {
+              console.error("Failed to parse local board:", error);
             }
           }
         }
@@ -465,8 +530,10 @@ export default function WhiteboardCanvas({
         }
 
         if (restoredFromLocalStorage && !isDisposed) {
-          console.log("Migrating local board data to the database...");
-          await persistBoard(roomId, createBoardState(canvas));
+          console.log(
+            "Synchronizing restored local board data with the database...",
+          );
+          void saveLatestBoard(createBoardState(canvas));
         }
 
         console.log("Whiteboard restored successfully.");
@@ -482,16 +549,24 @@ export default function WhiteboardCanvas({
 
       const participant = getParticipantIdentity();
 
-      socket.emit("join-room", {
-        roomId,
-        participant,
-      });
+      socket.emit("join-room", { roomId, participant });
 
       console.log(`Connected to whiteboard room: ${roomId}`);
+
+      retryPendingSave();
+    };
+
+    const handleOnline = () => {
+      console.log(
+        "Network connection restored. Retrying pending whiteboard save.",
+      );
+      retryPendingSave();
     };
 
     void restoreBoard().then(() => {
       if (isDisposed) return;
+
+      window.addEventListener("online", handleOnline);
 
       socket.on("board-update", handleRemoteBoardUpdate);
       socket.on("presence-update", handlePresenceUpdate);
@@ -944,6 +1019,8 @@ export default function WhiteboardCanvas({
       socket.off("presence-update", handlePresenceUpdate);
       socket.off("cursor-update", handleCursorUpdate);
       socket.off("connect", handleSocketConnect);
+
+      window.removeEventListener("online", handleOnline);
 
       if (socket.connected) {
         socket.emit("leave-room", roomId);
