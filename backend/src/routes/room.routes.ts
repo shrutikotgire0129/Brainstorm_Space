@@ -1,3 +1,4 @@
+
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma";
@@ -75,9 +76,10 @@ router.get("/:roomId", async (req, res) => {
 
 const updateRoomSchema = z.object({
   boardData: z.record(z.string(), z.unknown()),
+  expectedRevision: z.number().int().nonnegative(),
 });
 
-// Update room board data
+// Update room board data with optimistic concurrency control
 router.put("/:roomId", async (req, res) => {
   try {
     const result = updateRoomSchema.safeParse(req.body);
@@ -85,40 +87,89 @@ router.put("/:roomId", async (req, res) => {
     if (!result.success) {
       return res.status(400).json({
         success: false,
-        message: "Invalid board data",
+        message: "Invalid board data or expected revision",
         errors: result.error.flatten(),
       });
     }
 
-    const existingRoom = await prisma.room.findUnique({
-      where: {
-        id: req.params.roomId,
-      },
-      select: {
-        id: true,
-      },
+    const { boardData, expectedRevision } = result.data;
+
+    const saveResult = await prisma.$transaction(async (tx) => {
+      // Update only if the client's revision matches the database.
+      const updateResult = await tx.room.updateMany({
+        where: {
+          id: req.params.roomId,
+          revision: expectedRevision,
+        },
+        data: {
+          boardData: boardData as Prisma.InputJsonValue,
+          revision: {
+            increment: 1,
+          },
+        },
+      });
+
+      if (updateResult.count === 0) {
+        const currentRoom = await tx.room.findUnique({
+          where: {
+            id: req.params.roomId,
+          },
+          select: {
+            revision: true,
+          },
+        });
+
+        if (!currentRoom) {
+          return {
+            status: "not_found" as const,
+          };
+        }
+
+        return {
+          status: "conflict" as const,
+          currentRevision: currentRoom.revision,
+        };
+      }
+
+      const updatedRoom = await tx.room.findUnique({
+        where: {
+          id: req.params.roomId,
+        },
+      });
+
+      if (!updatedRoom) {
+        return {
+          status: "not_found" as const,
+        };
+      }
+
+      return {
+        status: "saved" as const,
+        room: updatedRoom,
+      };
     });
 
-    if (!existingRoom) {
+    if (saveResult.status === "not_found") {
       return res.status(404).json({
         success: false,
         message: "Room not found",
       });
     }
 
-    const updatedRoom = await prisma.room.update({
-      where: {
-        id: req.params.roomId,
-      },
-      data: {
-        boardData: result.data.boardData as Prisma.InputJsonValue,
-      },
-    });
+    if (saveResult.status === "conflict") {
+      return res.status(409).json({
+        success: false,
+        message: "Board was modified by another session",
+        code: "REVISION_CONFLICT",
+        expectedRevision,
+        currentRevision: saveResult.currentRevision,
+      });
+    }
 
     return res.status(200).json({
       success: true,
       message: "Board saved successfully",
-      data: updatedRoom,
+      data: saveResult.room,
     });
   } catch (error) {
     console.error("Update room error:", error);

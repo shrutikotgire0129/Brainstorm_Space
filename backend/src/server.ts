@@ -1,3 +1,4 @@
+
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -81,7 +82,6 @@ const removeParticipant = (socketId: string, roomId: string) => {
 };
 
 // Socket.IO connection handling
-
 io.on("connection", (socket) => {
   console.log(`Socket connected: ${socket.id}`);
 
@@ -179,33 +179,57 @@ io.on("connection", (socket) => {
     console.log(`Socket ${socket.id} left room ${roomId}`);
   });
 
-  socket.on(
-    "board-update",
-    (payload: { roomId?: unknown; boardState?: unknown }) => {
-      try {
-        const { roomId, boardState } = payload ?? {};
+  // Broadcast only successfully persisted board revisions.
+  socket.on("board-update", async (payload: unknown) => {
+    try {
+      if (!payload || typeof payload !== "object") return;
 
-        if (
-          typeof roomId !== "string" ||
-          !roomId.trim() ||
-          roomId.length > 64 ||
-          !socket.rooms.has(roomId) ||
-          !boardState ||
-          typeof boardState !== "object" ||
-          Array.isArray(boardState)
-        )
-          return;
+      const { roomId, boardState, revision } = payload as {
+        roomId?: unknown;
+        boardState?: unknown;
+        revision?: unknown;
+      };
 
-        const serializedState = JSON.stringify(boardState);
-
-        if (serializedState.length > 900_000) return;
-
-        socket.to(roomId).emit("board-update", { boardState });
-      } catch (error) {
-        console.error("Failed to broadcast board update:", error);
+      if (
+        typeof roomId !== "string" ||
+        !roomId.trim() ||
+        roomId.length > 64 ||
+        !socket.rooms.has(roomId) ||
+        currentRoomId !== roomId ||
+        !boardState ||
+        typeof boardState !== "object" ||
+        Array.isArray(boardState) ||
+        typeof revision !== "number" ||
+        !Number.isInteger(revision) ||
+        revision < 1
+      ) {
+        return;
       }
-    },
-  );
+
+      const serializedState = JSON.stringify(boardState);
+
+      if (serializedState.length > 900_000) return;
+
+      const room = await prisma.room.findUnique({
+        where: { id: roomId },
+        select: { revision: true },
+      });
+
+      if (!room || room.revision !== revision) {
+        console.warn(
+          `Rejected stale or uncommitted board broadcast for room ${roomId}.`,
+        );
+        return;
+      }
+
+      socket.to(roomId).emit("board-update", {
+        boardState,
+        revision,
+      });
+    } catch (error) {
+      console.error("Failed to broadcast board update:", error);
+    }
+  });
 
   // Broadcast live cursor positions to other participants in the room.
   socket.on("cursor-move", (payload: unknown) => {
