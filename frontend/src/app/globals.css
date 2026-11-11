@@ -1581,3 +1581,80 @@ a {
   white-space: nowrap;
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.15);
 }
+
+/* Whiteboard cloud save status */
+.whiteboard-save-status {
+  position: absolute;
+  top: 76px;
+  right: 22px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(520px, calc(100% - 44px));
+  padding: 9px 13px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid #e8e3f0;
+  border-radius: 12px;
+  box-shadow: 0 3px 12px rgba(40, 30, 60, 0.08);
+  color: #625773;
+  font-size: 12px;
+}
+
+.whiteboard-save-indicator {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #16a34a;
+}
+
+.whiteboard-save-status--saving .whiteboard-save-indicator {
+  background: #d97706;
+}
+
+.whiteboard-save-status--pending .whiteboard-save-indicator,
+.whiteboard-save-status--error .whiteboard-save-indicator {
+  background: #dc2626;
+}
+
+.whiteboard-save-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.whiteboard-save-error {
+  overflow: hidden;
+  color: #8b4650;
+  text-overflow: ellipsis;
+}
+
+.whiteboard-save-retry {
+  flex-shrink: 0;
+  padding: 4px 9px;
+  border: 1px solid #7256a8;
+  border-radius: 6px;
+  background: #f5f1fb;
+  color: #7256a8;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.whiteboard-save-retry:hover {
+  background: #ebe3f7;
+}
+
+@media (max-width: 640px) {
+    .whiteboard-save-status {
+    top: 66px;
+    right: 10px;
+    max-width: calc(100% - 20px);
+    padding: 7px 9px;
+    font-size: 11px;
+  }
+
+  .whiteboard-save-error {
+    max-width: 130px;
+  }
+}

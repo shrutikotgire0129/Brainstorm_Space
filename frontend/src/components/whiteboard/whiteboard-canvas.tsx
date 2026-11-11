@@ -39,6 +39,8 @@ type RemoteCursor = {
   y: number;
 };
 
+type SaveStatus = "saved" | "saving" | "pending" | "error";
+
 const NOTE_COLORS = ["#FFF2A8", "#FFD6D6", "#D9F2E6", "#DCE8FF", "#EADCF8"];
 const ERASER_CURSOR =
   "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cpath d='M7 18L16 5L25 11L16 24L7 18Z' fill='%23F2B8C6' stroke='%23252525' stroke-width='1.5'/%3E%3Cpath d='M7 18L16 24L12 28L3 22L7 18Z' fill='%23FFFFFF' stroke='%23252525' stroke-width='1.5'/%3E%3Cpath d='M12 28H25' stroke='%23252525' stroke-width='1.5'/%3E%3C/svg%3E\") 5 22, auto";
@@ -56,21 +58,31 @@ function createBoardState(canvas: Canvas) {
 
 type BoardState = ReturnType<typeof createBoardState>;
 
-async function persistBoard(roomId: string, boardState: BoardState) {
+async function persistBoard(
+  roomId: string,
+  boardState: BoardState,
+): Promise<{ localSaved: boolean }> {
   const storageKey = `brainstorm-space-board:${roomId}`;
   const pendingKey = `brainstorm-space-pending:${roomId}`;
 
-  // Preserve the latest board locally before attempting cloud synchronization.
+  let localSaved = true;
+
+  // Preserve the latest board locally before cloud synchronization.
   try {
     localStorage.setItem(storageKey, JSON.stringify(boardState));
     localStorage.setItem(pendingKey, "true");
   } catch (error) {
+    localSaved = false;
     console.error("Failed to save whiteboard locally:", error);
   }
 
   // Do not attempt a cloud save while offline.
   if (!navigator.onLine) {
-    throw new Error("Device is offline. Board saved locally.");
+    throw new Error(
+      localSaved
+        ? "Device is offline. Board saved locally."
+        : "Device is offline and the local backup failed. Your latest changes may not be recoverable after closing this tab.",
+    );
   }
 
   try {
@@ -91,12 +103,25 @@ async function persistBoard(roomId: string, boardState: BoardState) {
     }
 
     // Clear the pending marker only after a successful database save.
-    localStorage.removeItem(pendingKey);
+    try {
+      localStorage.removeItem(pendingKey);
+    } catch (error) {
+      localSaved = false;
+      console.error("Failed to clear the local pending marker:", error);
+    }
 
     console.log("Whiteboard saved to database.");
+
+    return { localSaved };
   } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Cloud save failed";
+
     console.error("Failed to save whiteboard to cloud:", error);
-    throw error;
+
+    throw new Error(
+      localSaved ? message : `${message}. The local backup also failed.`,
+    );
   }
 }
 
@@ -109,11 +134,16 @@ export default function WhiteboardCanvas({
   const canvasRef = useRef<Canvas | null>(null);
   const saveInProgressRef = useRef(false);
   const pendingBoardStateRef = useRef<BoardState | null>(null);
+  const retryRequestedRef = useRef(false);
+
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("saved");
+  const [saveError, setSaveError] = useState("");
 
   const saveLatestBoard = async (boardState: BoardState) => {
     // If another save is running, keep only the newest pending state.
     if (saveInProgressRef.current) {
       pendingBoardStateRef.current = boardState;
+      setSaveStatus("saving");
 
       try {
         localStorage.setItem(
@@ -128,35 +158,79 @@ export default function WhiteboardCanvas({
     }
 
     saveInProgressRef.current = true;
+    setSaveStatus("saving");
+    setSaveError("");
+
     let stateToSave: BoardState | null = boardState;
+    let saveFailed = false;
+    let localBackupWarning = false;
 
     try {
       while (stateToSave) {
         pendingBoardStateRef.current = null;
 
         try {
-          await persistBoard(roomId, stateToSave);
+          const result = await persistBoard(roomId, stateToSave);
+          localBackupWarning = !result.localSaved;
+
+          if (!result.localSaved) {
+            setSaveError(
+              "Saved to cloud, but the local backup is unavailable.",
+            );
+          }
         } catch (error) {
           // Preserve the failed state unless a newer state is already queued.
           pendingBoardStateRef.current ??= stateToSave;
 
-          console.error(
-            "Whiteboard synchronization is pending. It will be retried when the connection is restored.",
-            error,
-          );
+          const message =
+            error instanceof Error
+              ? error.message
+              : "An unexpected error occurred while saving.";
 
+          setSaveError(message);
+          setSaveStatus(navigator.onLine ? "error" : "pending");
+
+          console.error("Whiteboard synchronization is pending.", error);
+
+          saveFailed = true;
           break;
         }
 
         stateToSave = pendingBoardStateRef.current;
       }
+
+      if (!saveFailed && !pendingBoardStateRef.current) {
+        setSaveStatus("saved");
+        setSaveError(
+          localBackupWarning
+            ? "Saved to cloud, but the local backup is unavailable."
+            : "",
+        );
+      }
     } finally {
       saveInProgressRef.current = false;
+
+      // Retry once if connectivity returned while a save was running.
+      if (retryRequestedRef.current) {
+        retryRequestedRef.current = false;
+
+        if (navigator.onLine && pendingBoardStateRef.current) {
+          void saveLatestBoard(pendingBoardStateRef.current);
+        }
+      }
     }
   };
 
   const retryPendingSave = () => {
-    if (!navigator.onLine || saveInProgressRef.current) {
+    if (!navigator.onLine) {
+      setSaveStatus("pending");
+      setSaveError("Device is offline. Your changes are saved locally.");
+      return;
+    }
+
+    // Remember the retry request if a save is already running.
+    if (saveInProgressRef.current) {
+      retryRequestedRef.current = true;
       return;
     }
 
@@ -1202,6 +1276,35 @@ export default function WhiteboardCanvas({
             </div>
           ))}
         </div>
+      </div>
+
+      <div
+        className={`whiteboard-save-status whiteboard-save-status--${saveStatus}`}
+        role="status"
+        aria-live="polite"
+      >
+        <span className="whiteboard-save-indicator" />
+
+        <span className="whiteboard-save-label">
+          {saveStatus === "saved" && "Saved"}
+          {saveStatus === "saving" && "Saving..."}
+          {saveStatus === "pending" && "Save pending"}
+          {saveStatus === "error" && "Save failed"}
+        </span>
+
+        {saveError && (
+          <span className="whiteboard-save-error">{saveError}</span>
+        )}
+
+        {(saveStatus === "error" || saveStatus === "pending") && (
+          <button
+            type="button"
+            className="whiteboard-save-retry"
+            onClick={retryPendingSave}
+          >
+            Retry
+          </button>
+        )}
       </div>
 
       <div className="whiteboard-canvas-wrapper">
