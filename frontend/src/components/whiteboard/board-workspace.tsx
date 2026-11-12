@@ -25,6 +25,13 @@ export type ShapeType =
   | "arrow"
   | "line";
 
+export type HistoryControls = {
+  canUndo: boolean;
+  canRedo: boolean;
+  undo: () => void;
+  redo: () => void;
+};
+
 const SHAPES: { type: ShapeType; label: string; icon: string }[] = [
   { type: "rectangle", label: "Rectangle", icon: "▱" },
   { type: "square", label: "Square", icon: "□" },
@@ -40,6 +47,12 @@ export default function BoardWorkspace({ roomId }: BoardWorkspaceProps) {
   const [activeTool, setActiveTool] = useState<WhiteboardTool>("select");
   const [selectedShape, setSelectedShape] = useState<ShapeType>("rectangle");
   const [isShapesOpen, setIsShapesOpen] = useState(false);
+  const [historyControls, setHistoryControls] = useState<HistoryControls>({
+    canUndo: false,
+    canRedo: false,
+    undo: () => {},
+    redo: () => {},
+  });
 
   const chooseTool = (tool: WhiteboardTool) => {
     setActiveTool(tool);
@@ -168,12 +181,38 @@ export default function BoardWorkspace({ roomId }: BoardWorkspaceProps) {
           <span>T</span>
           <span className="tool-label">Text</span>
         </button>
+        <div className="board-toolbar-divider" />
+
+        <button
+          type="button"
+          className="board-tool-button"
+          title="Undo (Ctrl+Z)"
+          aria-label="Undo"
+          disabled={!historyControls.canUndo}
+          onClick={historyControls.undo}
+        >
+          <span>↶</span>
+          <span className="tool-label">Undo</span>
+        </button>
+
+        <button
+          type="button"
+          className="board-tool-button"
+          title="Redo (Ctrl+Shift+Z)"
+          aria-label="Redo"
+          disabled={!historyControls.canRedo}
+          onClick={historyControls.redo}
+        >
+          <span>↷</span>
+          <span className="tool-label">Redo</span>
+        </button>
       </div>
 
       <WhiteboardCanvas
         roomId={roomId}
         activeTool={activeTool}
         selectedShape={selectedShape}
+        onHistoryControlsChange={setHistoryControls}
       />
     </>
   );

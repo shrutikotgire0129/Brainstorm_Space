@@ -15,7 +15,11 @@ import {
   Line,
   Path,
 } from "fabric";
-import type { WhiteboardTool, ShapeType } from "./board-workspace";
+import type {
+  WhiteboardTool,
+  ShapeType,
+  HistoryControls,
+} from "./board-workspace";
 import { API_URL } from "@/lib/api";
 import { socket } from "@/lib/socket";
 import { getParticipantIdentity } from "@/lib/participant";
@@ -24,6 +28,7 @@ type WhiteboardCanvasProps = {
   roomId: string;
   activeTool: WhiteboardTool;
   selectedShape: ShapeType;
+  onHistoryControlsChange: (controls: HistoryControls) => void;
 };
 
 type RoomParticipant = {
@@ -175,6 +180,7 @@ export default function WhiteboardCanvas({
   roomId,
   activeTool,
   selectedShape,
+  onHistoryControlsChange,
 }: WhiteboardCanvasProps) {
   const canvasElementRef = useRef<HTMLCanvasElement>(null);
   const canvasRef = useRef<Canvas | null>(null);
@@ -185,6 +191,26 @@ export default function WhiteboardCanvas({
   const revisionConflictRef = useRef(false);
   const skipCleanupFlushRef = useRef(false);
   const isRecoveryRestoreRef = useRef(false);
+
+  // Undo/redo history.
+  const historyRef = useRef<BoardState[]>([]);
+  const historyIndexRef = useRef(-1);
+  const isApplyingHistoryRef = useRef(false);
+  const undoActionRef = useRef<(() => void) | null>(null);
+  const redoActionRef = useRef<(() => void) | null>(null);
+
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+
+  // Send current history availability and actions to the parent toolbar.
+  useEffect(() => {
+    onHistoryControlsChange({
+      canUndo,
+      canRedo,
+      undo: () => undoActionRef.current?.(),
+      redo: () => redoActionRef.current?.(),
+    });
+  }, [canUndo, canRedo, onHistoryControlsChange]);
 
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("saved");
   const [saveError, setSaveError] = useState("");
@@ -300,6 +326,8 @@ export default function WhiteboardCanvas({
       }
 
       canvas.requestRenderAll();
+
+      resetHistory(canvas);
 
       // Lock cloud saves after explicitly restoring the older draft.
       revisionConflictRef.current = true;
@@ -471,6 +499,61 @@ export default function WhiteboardCanvas({
     }
   };
 
+  // Keep Undo/Redo controls synchronized with the history position.
+  const updateHistoryAvailability = () => {
+    setCanUndo(historyIndexRef.current > 0);
+    setCanRedo(historyIndexRef.current < historyRef.current.length - 1);
+  };
+
+  // Record a completed local board action.
+  const recordHistorySnapshot = (canvas: Canvas) => {
+    if (isApplyingHistoryRef.current) return;
+
+    const snapshot = createBoardState(canvas);
+    const previousSnapshot = historyRef.current[historyIndexRef.current];
+
+    // Ignore duplicate snapshots, including intermediate Fabric events.
+    if (
+      previousSnapshot &&
+      JSON.stringify(previousSnapshot.canvas) ===
+        JSON.stringify(snapshot.canvas)
+    ) {
+      return;
+    }
+
+    // A new action after Undo discards the old redo branch.
+    historyRef.current = historyRef.current.slice(
+      0,
+      historyIndexRef.current + 1,
+    );
+
+    // Keep an independent copy of the serialized canvas state.
+    const savedSnapshot = JSON.parse(JSON.stringify(snapshot)) as BoardState;
+
+    historyRef.current.push(savedSnapshot);
+
+    // Limit memory usage to the latest 50 snapshots.
+    if (historyRef.current.length > 50) {
+      historyRef.current.shift();
+    }
+
+    historyIndexRef.current = historyRef.current.length - 1;
+
+    updateHistoryAvailability();
+  };
+
+  // Establish a fresh history baseline after board restoration.
+  const resetHistory = (canvas: Canvas) => {
+    const snapshot = JSON.parse(
+      JSON.stringify(createBoardState(canvas)),
+    ) as BoardState;
+
+    historyRef.current = [snapshot];
+    historyIndexRef.current = 0;
+
+    updateHistoryAvailability();
+  };
+
   const retryPendingSave = () => {
     // A conflict cannot be resolved by retrying the same stale revision.
     if (revisionConflictRef.current) {
@@ -552,6 +635,7 @@ export default function WhiteboardCanvas({
     canvas.freeDrawingBrush = brush;
 
     let isPanning = false;
+    let hasErasedObjects = false;
     let lastPointerX = 0;
     let lastPointerY = 0;
 
@@ -596,6 +680,7 @@ export default function WhiteboardCanvas({
         isRestoring ||
         isApplyingRemoteChanges ||
         isRecoveryRestoreRef.current ||
+        isApplyingHistoryRef.current ||
         isDisposed
       ) {
         return;
@@ -611,7 +696,8 @@ export default function WhiteboardCanvas({
         if (
           isDisposed ||
           isApplyingRemoteChanges ||
-          isRecoveryRestoreRef.current
+          isRecoveryRestoreRef.current ||
+          isApplyingHistoryRef.current
         ) {
           return;
         }
@@ -622,6 +708,82 @@ export default function WhiteboardCanvas({
         // Successful saves are broadcast by saveLatestBoard().
         void saveLatestBoard(boardState);
       }, 300);
+    };
+
+    // Restore a history snapshot without recording the restoration as a new action.
+    const applyHistorySnapshot = async (nextIndex: number) => {
+      if (
+        isApplyingHistoryRef.current ||
+        nextIndex < 0 ||
+        nextIndex >= historyRef.current.length
+      ) {
+        return;
+      }
+
+      const snapshot = historyRef.current[nextIndex];
+
+      if (!snapshot) return;
+
+      // Cancel any pending autosave before restoring the selected snapshot.
+      if (saveTimeout) {
+        clearTimeout(saveTimeout);
+        saveTimeout = null;
+      }
+
+      // Preserve the current viewport because pan and zoom are not history actions.
+      const currentViewportTransform: [
+        number,
+        number,
+        number,
+        number,
+        number,
+        number,
+      ] = canvas.viewportTransform
+        ? ([...canvas.viewportTransform] as [
+            number,
+            number,
+            number,
+            number,
+            number,
+            number,
+          ])
+        : [1, 0, 0, 1, 0, 0];
+
+      let restored = false;
+
+      isApplyingHistoryRef.current = true;
+
+      try {
+        await canvas.loadFromJSON(snapshot.canvas);
+
+        canvas.setViewportTransform(currentViewportTransform);
+        canvas.requestRenderAll();
+
+        historyIndexRef.current = nextIndex;
+        updateHistoryAvailability();
+
+        setZoom(canvas.getZoom());
+
+        restored = true;
+      } catch (error) {
+        console.error("Failed to restore whiteboard history:", error);
+        setSaveError("Undo/Redo could not restore this board state.");
+      } finally {
+        isApplyingHistoryRef.current = false;
+      }
+
+      // Persist only after a successful restoration.
+      if (restored) {
+        void saveLatestBoard(createBoardState(canvas));
+      }
+    };
+
+    undoActionRef.current = () => {
+      void applyHistorySnapshot(historyIndexRef.current - 1);
+    };
+
+    redoActionRef.current = () => {
+      void applyHistorySnapshot(historyIndexRef.current + 1);
     };
 
     const handlePresenceUpdate = (updatedParticipants: RoomParticipant[]) => {
@@ -801,6 +963,7 @@ export default function WhiteboardCanvas({
         }
 
         canvas.requestRenderAll();
+        resetHistory(canvas);
 
         localStorage.setItem(
           `brainstorm-space-board:${roomId}`,
@@ -981,7 +1144,14 @@ export default function WhiteboardCanvas({
         }
 
         // 5. Restore the selected board state.
-        if (isDisposed || !boardState?.canvas) {
+        if (isDisposed) {
+          return;
+        }
+
+        if (!boardState?.canvas) {
+          // Establish the empty board as the initial Undo/Redo snapshot.
+          canvas.requestRenderAll();
+          resetHistory(canvas);
           return;
         }
 
@@ -1011,6 +1181,7 @@ export default function WhiteboardCanvas({
         }
 
         canvas.requestRenderAll();
+        resetHistory(canvas);
 
         // 6. Keep localStorage synchronized with the restored state.
         if (!hasPendingSave) {
@@ -1082,6 +1253,7 @@ export default function WhiteboardCanvas({
       // The eraser only removes freehand drawing paths.
       if (fabricTarget.type === "path") {
         canvas.remove(fabricTarget);
+        hasErasedObjects = true;
         canvas.requestRenderAll();
       }
     };
@@ -1398,6 +1570,7 @@ export default function WhiteboardCanvas({
         } else {
           shapeBeingDrawn.setCoords();
           canvas.setActiveObject(shapeBeingDrawn);
+          recordHistorySnapshot(canvas);
           saveBoard();
         }
 
@@ -1406,6 +1579,12 @@ export default function WhiteboardCanvas({
       }
       if (isPanning) {
         saveBoard();
+      }
+
+      if (hasErasedObjects) {
+        recordHistorySnapshot(canvas);
+        saveBoard();
+        hasErasedObjects = false;
       }
 
       isPanning = false;
@@ -1445,10 +1624,9 @@ export default function WhiteboardCanvas({
 
     // Delete the currently selected note or text object.
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Delete" && event.key !== "Backspace") return;
-
       const target = event.target;
 
+      // Do not intercept keyboard shortcuts inside form fields.
       if (
         target instanceof HTMLInputElement ||
         target instanceof HTMLTextAreaElement ||
@@ -1458,6 +1636,34 @@ export default function WhiteboardCanvas({
       }
 
       const activeObject = canvas.getActiveObject();
+
+      // Preserve Fabric's native text editing shortcuts.
+      if (activeObject instanceof IText && activeObject.isEditing) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      const isModifierPressed = event.ctrlKey || event.metaKey;
+
+      // Undo: Ctrl+Z / Cmd+Z
+      if (isModifierPressed && key === "z" && !event.shiftKey) {
+        event.preventDefault();
+        undoActionRef.current?.();
+        return;
+      }
+
+      // Redo: Ctrl+Shift+Z / Cmd+Shift+Z / Ctrl+Y / Cmd+Y
+      if (
+        isModifierPressed &&
+        ((key === "z" && event.shiftKey) || key === "y")
+      ) {
+        event.preventDefault();
+        redoActionRef.current?.();
+        return;
+      }
+
+      // Preserve existing Delete/Backspace behavior.
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
 
       if (!activeObject) return;
 
@@ -1479,6 +1685,44 @@ export default function WhiteboardCanvas({
       canvas.remove(activeObject);
       canvas.discardActiveObject();
       canvas.requestRenderAll();
+
+      recordHistorySnapshot(canvas);
+      saveBoard();
+    };
+
+    // Record completed object transformations.
+    const handleObjectModified = () => {
+      recordHistorySnapshot(canvas);
+      saveBoard();
+    };
+
+    // Record each completed freehand stroke once.
+    const handlePathCreated = () => {
+      recordHistorySnapshot(canvas);
+      saveBoard();
+    };
+
+    // Record text creation or editing when the user exits text editing.
+    const handleTextEditingExited = () => {
+      recordHistorySnapshot(canvas);
+      saveBoard();
+    };
+
+    // Finish text editing when the user clicks outside the whiteboard.
+    const handleOutsidePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+
+      if (!(target instanceof Node)) return;
+      if (wrapper.contains(target)) return;
+
+      const activeObject = canvas.getActiveObject();
+
+      if (
+        (activeObject instanceof IText || activeObject instanceof Textbox) &&
+        activeObject.isEditing
+      ) {
+        activeObject.exitEditing();
+      }
     };
 
     canvas.on("mouse:down", handleMouseDown);
@@ -1487,13 +1731,15 @@ export default function WhiteboardCanvas({
     canvas.on("mouse:wheel", handleMouseWheel);
     // Automatically save changes to the board.
     canvas.on("object:added", saveBoard);
-    canvas.on("object:modified", saveBoard);
+    canvas.on("object:modified", handleObjectModified);
     canvas.on("object:removed", saveBoard);
-    canvas.on("path:created", saveBoard);
+    canvas.on("path:created", handlePathCreated);
     canvas.on("text:changed", saveBoard);
+    canvas.on("text:editing:exited", handleTextEditingExited);
 
     window.addEventListener("keydown", handleKeyDown);
     wrapper.addEventListener("pointermove", handlePointerMove);
+    document.addEventListener("pointerdown", handleOutsidePointerDown);
 
     const resizeObserver = new ResizeObserver(() => {
       canvas.setDimensions({
@@ -1525,6 +1771,7 @@ export default function WhiteboardCanvas({
       resizeObserver.disconnect();
       window.removeEventListener("keydown", handleKeyDown);
       wrapper.removeEventListener("pointermove", handlePointerMove);
+      document.removeEventListener("pointerdown", handleOutsidePointerDown);
 
       canvas.off("mouse:down", handleMouseDown);
       canvas.off("mouse:move", handleMouseMove);
@@ -1547,10 +1794,11 @@ export default function WhiteboardCanvas({
       }
 
       canvas.off("object:added", saveBoard);
-      canvas.off("object:modified", saveBoard);
+      canvas.off("object:modified", handleObjectModified);
       canvas.off("object:removed", saveBoard);
-      canvas.off("path:created", saveBoard);
+      canvas.off("path:created", handlePathCreated);
       canvas.off("text:changed", saveBoard);
+      canvas.off("text:editing:exited", handleTextEditingExited);
 
       canvasRef.current = null;
 
