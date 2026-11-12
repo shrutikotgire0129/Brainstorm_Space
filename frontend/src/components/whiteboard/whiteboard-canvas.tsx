@@ -201,16 +201,214 @@ export default function WhiteboardCanvas({
 
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
 
-  // Send current history availability and actions to the parent toolbar.
+  const exportActionRef = useRef<(() => void) | null>(null);
+
+  const exportBoardAsPng = async () => {
+    const canvas = canvasRef.current;
+
+    if (!canvas) {
+      setExportError("The whiteboard is not ready for export.");
+      return;
+    }
+
+    if (isExporting) return;
+
+    setIsExporting(true);
+    setExportError("");
+
+    let originalViewport: typeof canvas.viewportTransform | null = null;
+
+    try {
+      const objects = canvas
+        .getObjects()
+        .filter((object) => object.visible && object.opacity > 0);
+
+      let left = 0;
+      let top = 0;
+      let width = canvas.getWidth();
+      let height = canvas.getHeight();
+
+      if (objects.length > 0) {
+        const bounds = objects.map((object) => object.getBoundingRect());
+
+        const minX = Math.min(...bounds.map((bound) => bound.left));
+        const minY = Math.min(...bounds.map((bound) => bound.top));
+        const maxX = Math.max(
+          ...bounds.map((bound) => bound.left + bound.width),
+        );
+        const maxY = Math.max(
+          ...bounds.map((bound) => bound.top + bound.height),
+        );
+
+        const margin = 32;
+
+        left = Math.floor(minX - margin);
+        top = Math.floor(minY - margin);
+        width = Math.ceil(maxX + margin) - left;
+        height = Math.ceil(maxY + margin) - top;
+      }
+
+      const MAX_OUTPUT_DIMENSION = 8192;
+      const MAX_OUTPUT_PIXELS = 16_000_000;
+      const PREFERRED_SCALE = 2;
+
+      const scale =
+        Math.min(
+          PREFERRED_SCALE,
+          MAX_OUTPUT_DIMENSION / width,
+          MAX_OUTPUT_DIMENSION / height,
+          Math.sqrt(MAX_OUTPUT_PIXELS / (width * height)),
+        ) * 0.999;
+
+      if (!Number.isFinite(scale) || scale <= 0) {
+        throw new Error("Unable to calculate a safe PNG export resolution.");
+      }
+
+      const outputWidth = Math.max(1, Math.ceil(width * scale));
+      const outputHeight = Math.max(1, Math.ceil(height * scale));
+
+      if (
+        outputWidth > 8192 ||
+        outputHeight > 8192 ||
+        outputWidth * outputHeight > 16_000_000
+      ) {
+        throw new Error(
+          "This board is too large to export safely. Reduce its content area and try again.",
+        );
+      }
+
+      // Temporarily remove the current pan and zoom so the entire
+      // board is rendered in scene coordinates.
+      originalViewport =
+        canvas.viewportTransform.slice() as typeof canvas.viewportTransform;
+
+      let renderedBoard: HTMLCanvasElement;
+
+      try {
+        canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+
+        renderedBoard = canvas.toCanvasElement(scale, {
+          left,
+          top,
+          width,
+          height,
+        });
+      } finally {
+        if (originalViewport) {
+          canvas.setViewportTransform(originalViewport);
+          canvas.requestRenderAll();
+        }
+      }
+
+      // Recreate the whiteboard's lavender background and dotted grid.
+      const exportCanvas = document.createElement("canvas");
+      exportCanvas.width = outputWidth;
+      exportCanvas.height = outputHeight;
+
+      const context = exportCanvas.getContext("2d");
+
+      if (!context) {
+        throw new Error("Unable to create the PNG export canvas.");
+      }
+
+      context.fillStyle = "#fbfaff";
+      context.fillRect(0, 0, outputWidth, outputHeight);
+
+      context.fillStyle = "#d8d4e5";
+
+      const gridSpacing = 22;
+      const gridRadius = scale;
+
+      const firstGridX = Math.ceil(left / gridSpacing) * gridSpacing;
+      const firstGridY = Math.ceil(top / gridSpacing) * gridSpacing;
+
+      for (
+        let sceneX = firstGridX;
+        sceneX <= left + width;
+        sceneX += gridSpacing
+      ) {
+        for (
+          let sceneY = firstGridY;
+          sceneY <= top + height;
+          sceneY += gridSpacing
+        ) {
+          context.beginPath();
+          context.arc(
+            (sceneX - left) * scale,
+            (sceneY - top) * scale,
+            gridRadius,
+            0,
+            Math.PI * 2,
+          );
+          context.fill();
+        }
+      }
+
+      // Place the complete Fabric rendering over the background.
+      context.drawImage(renderedBoard, 0, 0);
+
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        exportCanvas.toBlob((result) => {
+          if (result) {
+            resolve(result);
+          } else {
+            reject(new Error("The browser could not generate the PNG file."));
+          }
+        }, "image/png");
+      });
+
+      const downloadUrl = URL.createObjectURL(blob);
+      const downloadLink = document.createElement("a");
+
+      downloadLink.href = downloadUrl;
+      downloadLink.download = `brainstorm-space-${new Date()
+        .toISOString()
+        .slice(0, 10)}.png`;
+
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      downloadLink.remove();
+
+      window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+    } catch (error) {
+      console.error("Whiteboard PNG export failed:", error);
+
+      setExportError(
+        error instanceof Error
+          ? error.message
+          : "Unable to export the whiteboard. Please try again.",
+      );
+    } finally {
+      // Keep the original viewport intact even if export fails.
+      if (originalViewport && canvasRef.current === canvas) {
+        canvas.setViewportTransform(originalViewport);
+        canvas.requestRenderAll();
+      }
+
+      setIsExporting(false);
+    }
+  };
+
+  useEffect(() => {
+    exportActionRef.current = () => {
+      void exportBoardAsPng();
+    };
+  });
+
+  // Send history controls and PNG export action to the parent toolbar.
   useEffect(() => {
     onHistoryControlsChange({
       canUndo,
       canRedo,
+      isExporting,
       undo: () => undoActionRef.current?.(),
       redo: () => redoActionRef.current?.(),
+      exportPng: () => exportActionRef.current?.(),
     });
-  }, [canUndo, canRedo, onHistoryControlsChange]);
+  }, [canUndo, canRedo, isExporting, onHistoryControlsChange]);
 
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("saved");
   const [saveError, setSaveError] = useState("");
@@ -1967,6 +2165,12 @@ export default function WhiteboardCanvas({
 
         {saveError && (
           <span className="whiteboard-save-error">{saveError}</span>
+        )}
+
+        {exportError && (
+          <span className="whiteboard-save-error" role="alert">
+            {exportError}
+          </span>
         )}
 
         {(saveStatus === "error" || saveStatus === "pending") && (

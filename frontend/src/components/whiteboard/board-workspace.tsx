@@ -28,8 +28,10 @@ export type ShapeType =
 export type HistoryControls = {
   canUndo: boolean;
   canRedo: boolean;
+  isExporting: boolean;
   undo: () => void;
   redo: () => void;
+  exportPng: () => void;
 };
 
 const SHAPES: { type: ShapeType; label: string; icon: string }[] = [
@@ -50,8 +52,10 @@ export default function BoardWorkspace({ roomId }: BoardWorkspaceProps) {
   const [historyControls, setHistoryControls] = useState<HistoryControls>({
     canUndo: false,
     canRedo: false,
+    isExporting: false,
     undo: () => {},
     redo: () => {},
+    exportPng: () => {},
   });
 
   const chooseTool = (tool: WhiteboardTool) => {
@@ -205,6 +209,19 @@ export default function BoardWorkspace({ roomId }: BoardWorkspaceProps) {
         >
           <span>↷</span>
           <span className="tool-label">Redo</span>
+        </button>
+        <button
+          type="button"
+          className="board-tool-button"
+          title="Export whiteboard as PNG"
+          aria-label="Export whiteboard as PNG"
+          disabled={historyControls.isExporting}
+          onClick={historyControls.exportPng}
+        >
+          <span>↓</span>
+          <span className="tool-label">
+            {historyControls.isExporting ? "Exporting..." : "Export PNG"}
+          </span>
         </button>
       </div>
 
