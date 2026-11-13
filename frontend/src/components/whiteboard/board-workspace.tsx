@@ -5,6 +5,7 @@ import WhiteboardCanvas from "./whiteboard-canvas";
 
 type BoardWorkspaceProps = {
   roomId: string;
+  onRoomNameChange: (name: string) => void;
 };
 
 export type WhiteboardTool =
@@ -45,7 +46,10 @@ const SHAPES: { type: ShapeType; label: string; icon: string }[] = [
   { type: "line", label: "Line", icon: "╱" },
 ];
 
-export default function BoardWorkspace({ roomId }: BoardWorkspaceProps) {
+export default function BoardWorkspace({
+  roomId,
+  onRoomNameChange,
+}: BoardWorkspaceProps) {
   const [activeTool, setActiveTool] = useState<WhiteboardTool>("select");
   const [selectedShape, setSelectedShape] = useState<ShapeType>("rectangle");
   const [isShapesOpen, setIsShapesOpen] = useState(false);
@@ -230,6 +234,7 @@ export default function BoardWorkspace({ roomId }: BoardWorkspaceProps) {
         activeTool={activeTool}
         selectedShape={selectedShape}
         onHistoryControlsChange={setHistoryControls}
+        onRoomNameChange={onRoomNameChange}
       />
     </>
   );

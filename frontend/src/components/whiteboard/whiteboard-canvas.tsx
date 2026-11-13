@@ -29,6 +29,7 @@ type WhiteboardCanvasProps = {
   activeTool: WhiteboardTool;
   selectedShape: ShapeType;
   onHistoryControlsChange: (controls: HistoryControls) => void;
+  onRoomNameChange: (name: string) => void;
 };
 
 type RoomParticipant = {
@@ -181,6 +182,7 @@ export default function WhiteboardCanvas({
   activeTool,
   selectedShape,
   onHistoryControlsChange,
+  onRoomNameChange,
 }: WhiteboardCanvasProps) {
   const canvasElementRef = useRef<HTMLCanvasElement>(null);
   const canvasRef = useRef<Canvas | null>(null);
@@ -1261,6 +1263,12 @@ export default function WhiteboardCanvas({
 
           if (!response.ok || !result.success) {
             throw new Error(result.message || "Failed to load room");
+          }
+
+          const roomName = result.data?.name;
+
+          if (typeof roomName === "string" && roomName.trim()) {
+            onRoomNameChange(roomName);
           }
 
           const revision = result.data?.revision;

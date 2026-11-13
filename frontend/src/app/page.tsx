@@ -3,9 +3,9 @@
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useState } from "react";
+import { saveRoomOwnerToken } from "@/lib/room-owner";
 
-const API_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
 
 const features = [
   {
@@ -109,41 +109,48 @@ export default function Home() {
 
   const [isCreating, setIsCreating] = useState(false);
 
-async function createBoard() {
-  if (isCreating) return;
+  async function createBoard() {
+    if (isCreating) return;
 
-  try {
-    setIsCreating(true);
+    try {
+      setIsCreating(true);
 
-    const response = await fetch(`${API_URL}/api/rooms`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        name: "Untitled Board",
-      }),
-    });
+      const response = await fetch(`${API_URL}/api/rooms`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: "Untitled Board",
+        }),
+      });
 
-    const result = await response.json();
+      const result = await response.json();
 
-    if (!response.ok || !result.success || !result.data?.id) {
-      throw new Error(result.message || "Failed to create board");
+      if (
+        !response.ok ||
+        !result.success ||
+        !result.data?.id ||
+        typeof result.data.ownerToken !== "string"
+      ) {
+        throw new Error(result.message || "Failed to create board");
+      }
+
+      saveRoomOwnerToken(result.data.id, result.data.ownerToken);
+
+      router.push(`/board/${result.data.id}`);
+    } catch (error) {
+      console.error("Board creation error:", error);
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : "Unable to create board. Please try again.",
+      );
+    } finally {
+      setIsCreating(false);
     }
-
-    router.push(`/board/${result.data.id}`);
-  } catch (error) {
-    console.error("Board creation error:", error);
-
-    alert(
-      error instanceof Error
-        ? error.message
-        : "Unable to create board. Please try again.",
-    );
-  } finally {
-    setIsCreating(false);
   }
-}
 
   return (
     <main className="home-page">
@@ -186,7 +193,11 @@ async function createBoard() {
           </p>
 
           <div className="hero-actions">
-            <button className="primary-button" onClick={createBoard} disabled={isCreating}>
+            <button
+              className="primary-button"
+              onClick={createBoard}
+              disabled={isCreating}
+            >
               Start brainstorming
               <span className="button-arrow">↗</span>
             </button>
@@ -265,7 +276,11 @@ async function createBoard() {
           </p>
         </div>
 
-        <button className="primary-button" onClick={createBoard} disabled={isCreating}>
+        <button
+          className="primary-button"
+          onClick={createBoard}
+          disabled={isCreating}
+        >
           Create your board <span className="button-arrow">↗</span>
         </button>
       </section>
