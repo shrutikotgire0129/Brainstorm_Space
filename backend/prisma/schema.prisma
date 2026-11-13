@@ -1,3 +1,4 @@
+
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
@@ -7,6 +8,21 @@ datasource db {
   provider = "postgresql"
 }
 
+enum SharePermission {
+  VIEWER
+  EDITOR
+}
+
+enum ShareAccessMode {
+  INSTANT
+  APPROVAL
+}
+
+enum BoardAccessRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
 
 model Room {
   id             String   @id @default(cuid())
@@ -16,4 +32,81 @@ model Room {
   ownerTokenHash String?  @unique
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+
+  shareSettings  BoardShareSettings?
+  invitations    BoardInvite[]
+  guestAccesses  BoardGuestAccess[]
+}
+
+model BoardShareSettings {
+  id         String           @id @default(cuid())
+  roomId     String           @unique
+  tokenHash  String?          @unique
+  permission SharePermission  @default(VIEWER)
+  accessMode ShareAccessMode  @default(INSTANT)
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  room           Room                 @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  accessRequests BoardAccessRequest[]
+  guestAccesses  BoardGuestAccess[]
+}
+
+model BoardInvite {
+  id         String          @id @default(cuid())
+  roomId     String
+  tokenHash  String          @unique
+  permission SharePermission @default(VIEWER)
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+
+  room         Room               @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  guestAccesses BoardGuestAccess[]
+
+  @@index([roomId, revokedAt])
+}
+
+model BoardAccessRequest {
+  id               String                   @id @default(cuid())
+  shareSettingsId  String
+  participantId    String
+  participantName  String
+  status           BoardAccessRequestStatus @default(PENDING)
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+  reviewedAt       DateTime?
+
+  shareSettings BoardShareSettings @relation(fields: [shareSettingsId], references: [id], onDelete: Cascade)
+  guestAccess   BoardGuestAccess?
+
+  @@index([shareSettingsId, status, createdAt])
+  @@index([shareSettingsId, participantId])
+}
+
+model BoardGuestAccess {
+  id                   String          @id @default(cuid())
+  roomId               String
+  credentialHash       String          @unique
+  participantId        String
+  participantName      String
+  permission           SharePermission
+  sourceShareSettingsId String?
+  sourceInviteId       String?
+  sourceRequestId      String?         @unique
+  expiresAt            DateTime?
+  revokedAt            DateTime?
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+
+  room          Room                @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  sourceSettings BoardShareSettings? @relation(fields: [sourceShareSettingsId], references: [id], onDelete: SetNull)
+  sourceInvite  BoardInvite?         @relation(fields: [sourceInviteId], references: [id], onDelete: SetNull)
+  sourceRequest BoardAccessRequest?  @relation(fields: [sourceRequestId], references: [id], onDelete: SetNull)
+
+  @@index([roomId, revokedAt, expiresAt])
+  @@index([participantId, roomId])
 }

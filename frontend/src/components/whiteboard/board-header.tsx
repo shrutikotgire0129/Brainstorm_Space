@@ -4,6 +4,7 @@ import { useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { API_URL } from "@/lib/api";
 import { getRoomOwnerToken } from "@/lib/room-owner";
+import BoardShareDialog from "./board-share-dialog";
 
 type BoardHeaderProps = {
   roomId: string;
@@ -28,6 +29,7 @@ export default function BoardHeader({
   const [editedName, setEditedName] = useState(boardName);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState("");
+  const [isShareOpen, setIsShareOpen] = useState(false);
 
   const skipNextBlurSaveRef = useRef(false);
 
@@ -174,12 +176,23 @@ export default function BoardHeader({
         <button
           type="button"
           className="board-share-button"
-          disabled
-          title="Sharing will be available in a later feature"
+          disabled={!canRename}
+          title={
+            canRename
+              ? "Share this board"
+              : "Only the creator can manage sharing"
+          }
+          onClick={() => setIsShareOpen(true)}
         >
           Share
         </button>
       </div>
+      {isShareOpen && (
+        <BoardShareDialog
+          roomId={roomId}
+          onClose={() => setIsShareOpen(false)}
+        />
+      )}
     </header>
   );
 }
