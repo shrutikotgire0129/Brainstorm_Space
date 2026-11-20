@@ -7,8 +7,37 @@ import {
   hashToken,
   verifyRoomOwner,
 } from "../lib/owner-auth";
+import {
+  GuestAccessError,
+  getAccessRequestStatus,
+  redeemAccessToken,
+  reviewAccessRequest,
+} from "../lib/guest-access";
+import { authorizeRoomRequest } from "../lib/room-auth";
+import { rateLimit } from "express-rate-limit";
 
 const router = Router();
+const guestRedeemLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many guest access attempts. Please try again later.",
+  },
+});
+
+const accessRequestStatusLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many access status requests. Please try again later.",
+  },
+});
 
 const createRoomSchema = z.object({
   name: z.string().trim().min(1).max(100).optional(),
@@ -43,6 +72,23 @@ const createInvitationSchema = z.object({
     )
     .nullable()
     .optional(),
+});
+
+const redeemGuestAccessSchema = z.object({
+  token: z.string().min(40).max(128),
+  participant: z.object({
+    id: z.string().uuid(),
+    name: z.string().trim().min(1).max(32),
+  }),
+});
+
+const accessRequestStatusSchema = z.object({
+  requestToken: z.string().min(40).max(128),
+});
+
+const reviewAccessRequestSchema = z.object({
+  decision: z.enum(["APPROVED", "REJECTED"]),
+  permission: z.enum(["VIEWER", "EDITOR"]).optional(),
 });
 
 // Create a room
@@ -93,10 +139,21 @@ router.post("/", async (req, res) => {
   }
 });
 
-// Get a room by ID.
-// Never expose the creator token hash.
+// Retrieve a room. Requires owner or valid guest access.
 router.get("/:roomId", async (req, res) => {
   try {
+    const authorization = await authorizeRoomRequest(
+      req.params.roomId,
+      req.get("authorization"),
+    );
+
+    if (!authorization.authorized) {
+      return res.status(authorization.status).json({
+        success: false,
+        message: authorization.message,
+      });
+    }
+
     const room = await prisma.room.findUnique({
       where: {
         id: req.params.roomId,
@@ -218,6 +275,24 @@ const updateRoomSchema = z.object({
 // Update room board data with optimistic concurrency control.
 router.put("/:roomId", async (req, res) => {
   try {
+    const authorization = await authorizeRoomRequest(
+      req.params.roomId,
+      req.get("authorization"),
+    );
+
+    if (!authorization.authorized) {
+      return res.status(authorization.status).json({
+        success: false,
+        message: authorization.message,
+      });
+    }
+
+    if (authorization.role === "VIEWER") {
+      return res.status(403).json({
+        success: false,
+        message: "Viewer access cannot modify the board.",
+      });
+    }
     const result = updateRoomSchema.safeParse(req.body);
 
     if (!result.success) {
@@ -229,6 +304,15 @@ router.put("/:roomId", async (req, res) => {
     }
 
     const { boardData, expectedRevision } = result.data;
+
+    const serializedBoardData = JSON.stringify(boardData);
+
+    if (serializedBoardData.length > 900_000) {
+      return res.status(413).json({
+        success: false,
+        message: "Board data exceeds the maximum allowed size.",
+      });
+    }
 
     const saveResult = await prisma.$transaction(async (tx) => {
       const updateResult = await tx.room.updateMany({
@@ -887,6 +971,216 @@ router.delete("/:roomId/invitations/:inviteId", async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to revoke board invitation",
+    });
+  }
+});
+
+router.post(
+  "/:roomId/guest-access/redeem",
+  guestRedeemLimiter,
+  async (req, res) => {
+    try {
+      const roomId = req.params.roomId as string;
+      const result = redeemGuestAccessSchema.safeParse(req.body);
+
+      if (!result.success) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid guest access details",
+          errors: result.error.flatten(),
+        });
+      }
+
+      const roomExists = await prisma.room.findUnique({
+        where: { id: roomId },
+        select: { id: true },
+      });
+
+      if (!roomExists) {
+        return res.status(404).json({
+          success: false,
+          message: "Board not found",
+        });
+      }
+
+      const data = await redeemAccessToken(
+        roomId,
+        result.data.token,
+        result.data.participant,
+      );
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      if (error instanceof GuestAccessError) {
+        return res.status(error.status).json({
+          success: false,
+          message: error.message,
+        });
+      }
+
+      console.error("Redeem guest access error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to redeem board access",
+      });
+    }
+  },
+);
+
+router.post(
+  "/:roomId/guest-access/request-status",
+  accessRequestStatusLimiter,
+  async (req, res) => {
+    try {
+      const roomId = req.params.roomId as string;
+      const result = accessRequestStatusSchema.safeParse(req.body);
+
+      if (!result.success) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid access request token",
+          errors: result.error.flatten(),
+        });
+      }
+
+      const data = await getAccessRequestStatus(
+        roomId,
+        result.data.requestToken,
+      );
+
+      return res.status(200).json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      if (error instanceof GuestAccessError) {
+        return res.status(error.status).json({
+          success: false,
+          message: error.message,
+        });
+      }
+
+      console.error("Get guest access request status error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to retrieve access request status",
+      });
+    }
+  },
+);
+
+router.get("/:roomId/access-requests", async (req, res) => {
+  try {
+    const roomId = req.params.roomId as string;
+    const authorization = await verifyRoomOwner(
+      req.params.roomId,
+      req.get("authorization"),
+    );
+
+    if (!authorization.authorized) {
+      return res.status(authorization.status).json({
+        success: false,
+        message: authorization.message,
+      });
+    }
+
+    const requests = await prisma.boardAccessRequest.findMany({
+      where: {
+        shareSettings: {
+          roomId: req.params.roomId,
+        },
+        status: "PENDING",
+      },
+      orderBy: {
+        createdAt: "asc",
+      },
+      select: {
+        id: true,
+        participantId: true,
+        participantName: true,
+        status: true,
+        createdAt: true,
+        shareSettings: {
+          select: {
+            permission: true,
+            accessMode: true,
+            expiresAt: true,
+          },
+        },
+      },
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: requests,
+    });
+  } catch (error) {
+    console.error("List board access requests error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to retrieve access requests",
+    });
+  }
+});
+
+router.patch("/:roomId/access-requests/:requestId", async (req, res) => {
+  try {
+    const authorization = await verifyRoomOwner(
+      req.params.roomId,
+      req.get("authorization"),
+    );
+
+    if (!authorization.authorized) {
+      return res.status(authorization.status).json({
+        success: false,
+        message: authorization.message,
+      });
+    }
+
+    const result = reviewAccessRequestSchema.safeParse(req.body);
+
+    if (!result.success) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid access request decision",
+        errors: result.error.flatten(),
+      });
+    }
+
+    const data = await reviewAccessRequest(
+      req.params.roomId,
+      req.params.requestId,
+      result.data.decision,
+      result.data.permission,
+    );
+
+    return res.status(200).json({
+      success: true,
+      message:
+        data.status === "APPROVED"
+          ? "Guest access approved successfully"
+          : "Guest access request rejected",
+      data,
+    });
+  } catch (error) {
+    if (error instanceof GuestAccessError) {
+      return res.status(error.status).json({
+        success: false,
+        message: error.message,
+      });
+    }
+
+    console.error("Review board access request error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to review access request",
     });
   }
 });

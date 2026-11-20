@@ -1,4 +1,3 @@
-
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -6,10 +5,15 @@ import { createServer } from "http";
 import { Server } from "socket.io";
 import roomRoutes from "./routes/room.routes";
 import { prisma } from "./lib/prisma";
+import { randomUUID } from "crypto";
+import { authorizeRoomCredential } from "./lib/room-auth";
 
 dotenv.config();
 
 const app = express();
+
+app.set("trust proxy", 1);
+
 const httpServer = createServer(app);
 
 const PORT = Number(process.env.PORT) || 5000;
@@ -18,6 +22,7 @@ const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
 
 // Socket.IO configuration
 const io = new Server(httpServer, {
+  maxHttpBufferSize: 1_000_000,
   cors: {
     origin: FRONTEND_URL,
     methods: ["GET", "POST"],
@@ -86,49 +91,58 @@ io.on("connection", (socket) => {
   console.log(`Socket connected: ${socket.id}`);
 
   let currentRoomId: string | null = null;
+  let roomOperationId = 0;
+  let pendingRoomId: string | null = null;
 
   socket.on("join-room", async (payload: unknown) => {
+    let operationId: number | null = null;
+
     try {
       if (!payload || typeof payload !== "object") return;
 
-      const { roomId, participant } = payload as {
+      const { roomId } = payload as {
         roomId?: unknown;
-        participant?: unknown;
       };
 
-      if (
-        typeof roomId !== "string" ||
-        !roomId.trim() ||
-        roomId.length > 64 ||
-        !participant ||
-        typeof participant !== "object"
-      )
+      if (typeof roomId !== "string" || !roomId.trim() || roomId.length > 64) {
         return;
+      }
+      operationId = ++roomOperationId;
+      pendingRoomId = roomId;
+      const credential = socket.handshake.auth?.credential;
 
-      const candidate = participant as Record<string, unknown>;
+      const authorization = await authorizeRoomCredential(
+        roomId,
+        typeof credential === "string" ? credential : undefined,
+      );
 
-      if (
-        typeof candidate.id !== "string" ||
-        !/^[0-9a-f-]{36}$/i.test(candidate.id) ||
-        typeof candidate.name !== "string" ||
-        !candidate.name.trim() ||
-        candidate.name.length > 32 ||
-        typeof candidate.color !== "string" ||
-        !/^#[0-9a-f]{6}$/i.test(candidate.color)
-      )
+      if (!socket.connected || operationId !== roomOperationId) {
+        if (operationId === roomOperationId) {
+          pendingRoomId = null;
+        }
         return;
+      }
 
-      const room = await prisma.room.findUnique({
-        where: { id: roomId },
-        select: { id: true },
-      });
+      if (!authorization.authorized) {
+        pendingRoomId = null;
+        if (currentRoomId) {
+          socket.leave(currentRoomId);
+          removeParticipant(socket.id, currentRoomId);
+          currentRoomId = null;
+        }
 
-      if (!room) {
         socket.emit("room-error", {
-          message: "Room does not exist.",
+          message: "You do not have valid access to this room.",
         });
         return;
       }
+
+      const participant = {
+        socketId: socket.id,
+        id: authorization.participant?.id ?? randomUUID(),
+        name: authorization.participant?.name ?? "Owner",
+        color: "#8B5CF6",
+      };
 
       // Remove the participant from their previous room, if necessary.
       if (currentRoomId && currentRoomId !== roomId) {
@@ -137,37 +151,55 @@ io.on("connection", (socket) => {
       }
 
       await socket.join(roomId);
+
+      if (!socket.connected || operationId !== roomOperationId) {
+        if (operationId === roomOperationId) {
+          pendingRoomId = null;
+        }
+
+        if (currentRoomId !== roomId) {
+          socket.leave(roomId);
+        }
+        return;
+      }
+      pendingRoomId = null;
+
       currentRoomId = roomId;
 
       const roomParticipants = participantsByRoom.get(roomId) ?? new Map();
 
-      roomParticipants.set(socket.id, {
-        socketId: socket.id,
-        id: candidate.id,
-        name: candidate.name.trim(),
-        color: candidate.color,
-      });
-
+      roomParticipants.set(socket.id, participant);
       participantsByRoom.set(roomId, roomParticipants);
 
       broadcastPresence(roomId);
-
-      console.log(
-        `Socket ${socket.id} joined room ${roomId} as ${candidate.name}`,
-      );
     } catch (error) {
+      if (operationId === roomOperationId) {
+        pendingRoomId = null;
+      }
+
       console.error("Failed to join room:", error);
     }
   });
 
   socket.on("leave-room", (roomId: unknown) => {
-    if (
-      typeof roomId !== "string" ||
-      !roomId.trim() ||
-      roomId.length > 64 ||
-      !socket.rooms.has(roomId)
-    )
+    if (typeof roomId !== "string" || !roomId.trim() || roomId.length > 64) {
       return;
+    }
+
+    const isPendingRoom = pendingRoomId === roomId;
+
+    if (isPendingRoom) {
+      roomOperationId++;
+      pendingRoomId = null;
+    }
+
+    if (!socket.rooms.has(roomId)) {
+      return;
+    }
+
+    if (!isPendingRoom && pendingRoomId === null && currentRoomId === roomId) {
+      roomOperationId++;
+    }
 
     socket.leave(roomId);
     removeParticipant(socket.id, roomId);
@@ -206,6 +238,42 @@ io.on("connection", (socket) => {
         return;
       }
 
+      const operationId = roomOperationId;
+      const credential = socket.handshake.auth?.credential;
+
+      const authorization = await authorizeRoomCredential(
+        roomId,
+        typeof credential === "string" ? credential : undefined,
+      );
+
+      if (
+        !socket.connected ||
+        operationId !== roomOperationId ||
+        currentRoomId !== roomId ||
+        !socket.rooms.has(roomId)
+      ) {
+        return;
+      }
+
+      if (!authorization.authorized) {
+        socket.emit("room-error", {
+          message: "Your room access has expired or been revoked.",
+        });
+
+        socket.leave(roomId);
+        removeParticipant(socket.id, roomId);
+        currentRoomId = null;
+        socket.disconnect(true);
+        return;
+      }
+
+      if (authorization.role === "VIEWER") {
+        socket.emit("room-error", {
+          message: "Editor permission is required to modify the board.",
+        });
+        return;
+      }
+
       const serializedState = JSON.stringify(boardState);
 
       if (serializedState.length > 900_000) return;
@@ -214,6 +282,15 @@ io.on("connection", (socket) => {
         where: { id: roomId },
         select: { revision: true },
       });
+
+      if (
+        !socket.connected ||
+        operationId !== roomOperationId ||
+        currentRoomId !== roomId ||
+        !socket.rooms.has(roomId)
+      ) {
+        return;
+      }
 
       if (!room || room.revision !== revision) {
         console.warn(
@@ -232,7 +309,7 @@ io.on("connection", (socket) => {
   });
 
   // Broadcast live cursor positions to other participants in the room.
-  socket.on("cursor-move", (payload: unknown) => {
+  socket.on("cursor-move", async (payload: unknown) => {
     try {
       if (!payload || typeof payload !== "object") return;
 
@@ -260,6 +337,35 @@ io.on("connection", (socket) => {
         return;
       }
 
+      const operationId = roomOperationId;
+      const credential = socket.handshake.auth?.credential;
+
+      const authorization = await authorizeRoomCredential(
+        roomId,
+        typeof credential === "string" ? credential : undefined,
+      );
+
+      if (
+        !socket.connected ||
+        operationId !== roomOperationId ||
+        currentRoomId !== roomId ||
+        !socket.rooms.has(roomId)
+      ) {
+        return;
+      }
+
+      if (!authorization.authorized) {
+        socket.emit("room-error", {
+          message: "Your room access has expired or been revoked.",
+        });
+
+        socket.leave(roomId);
+        removeParticipant(socket.id, roomId);
+        currentRoomId = null;
+        socket.disconnect(true);
+        return;
+      }
+
       socket.to(roomId).emit("cursor-update", {
         socketId: socket.id,
         x,
@@ -271,6 +377,8 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", (reason) => {
+    roomOperationId++;
+    pendingRoomId = null;
     if (currentRoomId) {
       removeParticipant(socket.id, currentRoomId);
       currentRoomId = null;

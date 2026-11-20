@@ -26,7 +26,9 @@ export async function verifyRoomOwner(
   roomId: string,
   authorization: string | undefined,
 ): Promise<OwnerAuthorizationResult> {
-  const tokenMatch = authorization?.match(/^Bearer\s+([A-Za-z0-9_-]{40,128})$/);
+  const tokenMatch = authorization
+    ?.trim()
+    .match(/^Bearer\s+([A-Za-z0-9_-]{40,128})$/i);
 
   if (!tokenMatch) {
     return {

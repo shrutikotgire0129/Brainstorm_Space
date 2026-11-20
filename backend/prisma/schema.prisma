@@ -75,6 +75,7 @@ model BoardAccessRequest {
   shareSettingsId  String
   participantId    String
   participantName  String
+  requestTokenHash String                   @unique
   status           BoardAccessRequestStatus @default(PENDING)
   createdAt        DateTime                 @default(now())
   updatedAt        DateTime                 @updatedAt
