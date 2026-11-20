@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Canvas,
   Point,
@@ -22,7 +22,8 @@ import type {
 } from "./board-workspace";
 import { API_URL } from "@/lib/api";
 import { socket } from "@/lib/socket";
-import { getParticipantIdentity } from "@/lib/participant";
+import { getRoomOwnerToken } from "@/lib/room-owner";
+import { getGuestCredential } from "@/lib/guest-credential";
 
 type WhiteboardCanvasProps = {
   roomId: string;
@@ -57,6 +58,13 @@ class RevisionConflictError extends Error {
     );
     this.name = "RevisionConflictError";
     this.currentRevision = currentRevision;
+  }
+}
+
+class RoomAuthorizationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RoomAuthorizationError";
   }
 }
 
@@ -113,10 +121,19 @@ async function persistBoard(
   }
 
   try {
+    const credential = getRoomOwnerToken(roomId) ?? getGuestCredential(roomId);
+
+    if (!credential) {
+      throw new RoomAuthorizationError(
+        "Room access credential is missing. Please rejoin the board.",
+      );
+    }
+
     const response = await fetch(`${API_URL}/api/rooms/${roomId}`, {
       method: "PUT",
       headers: {
         "Content-Type": "application/json",
+        Authorization: `Bearer ${credential}`,
       },
       body: JSON.stringify({
         boardData: boardState,
@@ -125,6 +142,12 @@ async function persistBoard(
     });
 
     const result = await response.json();
+
+    if (response.status === 401 || response.status === 403) {
+      throw new RoomAuthorizationError(
+        result.message || "You no longer have permission to access this board.",
+      );
+    }
 
     // A stale revision must never be retried as an ordinary save failure.
     if (
@@ -162,7 +185,10 @@ async function persistBoard(
     };
   } catch (error) {
     // Preserve the custom conflict error for the save queue.
-    if (error instanceof RevisionConflictError) {
+    if (
+      error instanceof RevisionConflictError ||
+      error instanceof RoomAuthorizationError
+    ) {
       throw error;
     }
 
@@ -189,6 +215,9 @@ export default function WhiteboardCanvas({
   const saveInProgressRef = useRef(false);
   const pendingBoardStateRef = useRef<BoardState | null>(null);
   const retryRequestedRef = useRef(false);
+  const saveLatestBoardRef = useRef<
+    ((boardState: BoardState) => Promise<void>) | null
+  >(null);
   const roomRevisionRef = useRef(0);
   const revisionConflictRef = useRef(false);
   const skipCleanupFlushRef = useRef(false);
@@ -545,216 +574,245 @@ export default function WhiteboardCanvas({
     }
   };
 
-  const saveLatestBoard = async (boardState: BoardState) => {
-    // A revision conflict requires an explicit resolution.
-    // Continue preserving newer edits locally without uploading them.
-    if (revisionConflictRef.current) {
-      pendingBoardStateRef.current = boardState;
-
-      try {
-        localStorage.setItem(
-          `brainstorm-space-board:${roomId}`,
-          JSON.stringify(boardState),
-        );
-        localStorage.setItem(`brainstorm-space-pending:${roomId}`, "true");
-      } catch (error) {
-        console.error("Failed to preserve conflicted board locally:", error);
-      }
-
-      return;
-    }
-
-    // If another save is running, keep only the newest pending state.
-    if (saveInProgressRef.current) {
-      pendingBoardStateRef.current = boardState;
-      setSaveStatus("saving");
-
-      try {
-        localStorage.setItem(
-          `brainstorm-space-board:${roomId}`,
-          JSON.stringify(boardState),
-        );
-      } catch (error) {
-        console.error("Failed to save whiteboard locally:", error);
-      }
-
-      return;
-    }
-
-    saveInProgressRef.current = true;
-    setSaveStatus("saving");
-    setSaveError("");
-
-    let stateToSave: BoardState | null = boardState;
-    let saveFailed = false;
-    let conflictDetected = false;
-    let localBackupWarning = false;
-
-    try {
-      while (stateToSave) {
-        pendingBoardStateRef.current = null;
+  const saveLatestBoard = useCallback(
+    async (boardState: BoardState) => {
+      // A revision conflict requires an explicit resolution.
+      // Continue preserving newer edits locally without uploading them.
+      if (revisionConflictRef.current) {
+        pendingBoardStateRef.current = boardState;
 
         try {
-          const result = await persistBoard(
-            roomId,
-            stateToSave,
-            roomRevisionRef.current,
+          localStorage.setItem(
+            `brainstorm-space-board:${roomId}`,
+            JSON.stringify(boardState),
           );
-
-          // Advance the revision only after confirmed cloud success.
-          roomRevisionRef.current = Math.max(
-            roomRevisionRef.current,
-            result.revision,
-          );
-
-          localBackupWarning = !result.localSaved;
-
-          // Broadcast only after the database confirms this revision.
-          if (socket.connected) {
-            socket.emit("board-update", {
-              roomId,
-              boardState: stateToSave,
-              revision: result.revision,
-            });
-          }
-
-          if (!result.localSaved) {
-            setSaveError(
-              "Saved to cloud, but the local backup is unavailable.",
-            );
-          }
+          localStorage.setItem(`brainstorm-space-pending:${roomId}`, "true");
         } catch (error) {
-          // Preserve the newest state, including edits queued during this save.
-          pendingBoardStateRef.current ??= stateToSave;
+          console.error("Failed to preserve conflicted board locally:", error);
+        }
 
-          if (error instanceof RevisionConflictError) {
-            conflictDetected = true;
-            revisionConflictRef.current = true;
+        return;
+      }
 
-            // Record the server's latest revision, but do not overwrite it.
-            roomRevisionRef.current = error.currentRevision;
+      // If another save is running, keep only the newest pending state.
+      if (saveInProgressRef.current) {
+        pendingBoardStateRef.current = boardState;
+        setSaveStatus("saving");
 
-            setSaveStatus("conflict");
-            setSaveError(
-              `${error.message} Your local draft is preserved. Reload the latest board or resolve the conflict before saving again.`,
+        try {
+          localStorage.setItem(
+            `brainstorm-space-board:${roomId}`,
+            JSON.stringify(boardState),
+          );
+        } catch (error) {
+          console.error("Failed to save whiteboard locally:", error);
+        }
+
+        return;
+      }
+
+      saveInProgressRef.current = true;
+      setSaveStatus("saving");
+      setSaveError("");
+
+      let stateToSave: BoardState | null = boardState;
+      let saveFailed = false;
+      let conflictDetected = false;
+      let localBackupWarning = false;
+      let authorizationFailed = false;
+
+      try {
+        while (stateToSave) {
+          pendingBoardStateRef.current = null;
+
+          try {
+            const result = await persistBoard(
+              roomId,
+              stateToSave,
+              roomRevisionRef.current,
             );
 
-            console.error("Whiteboard revision conflict detected.", error);
+            // Advance the revision only after confirmed cloud success.
+            roomRevisionRef.current = Math.max(
+              roomRevisionRef.current,
+              result.revision,
+            );
+
+            localBackupWarning = !result.localSaved;
+
+            // Broadcast only after the database confirms this revision.
+            if (socket.connected) {
+              socket.emit("board-update", {
+                roomId,
+                boardState: stateToSave,
+                revision: result.revision,
+              });
+            }
+
+            if (!result.localSaved) {
+              setSaveError(
+                "Saved to cloud, but the local backup is unavailable.",
+              );
+            }
+          } catch (error) {
+            // Preserve the newest state, including edits queued during this save.
+            pendingBoardStateRef.current ??= stateToSave;
+
+            if (error instanceof RoomAuthorizationError) {
+              setSaveStatus("error");
+              setSaveError(error.message);
+
+              console.error(
+                "Board authorization failed. Local draft preserved.",
+                error,
+              );
+
+              saveFailed = true;
+              break;
+            }
+
+            if (error instanceof RevisionConflictError) {
+              conflictDetected = true;
+              revisionConflictRef.current = true;
+              authorizationFailed = true;
+
+              // Record the server's latest revision, but do not overwrite it.
+              roomRevisionRef.current = error.currentRevision;
+
+              setSaveStatus("conflict");
+              setSaveError(
+                `${error.message} Your local draft is preserved. Reload the latest board or resolve the conflict before saving again.`,
+              );
+
+              console.error("Whiteboard revision conflict detected.", error);
+
+              saveFailed = true;
+              break;
+            }
+
+            const message =
+              error instanceof Error
+                ? error.message
+                : "An unexpected error occurred while saving.";
+
+            setSaveError(message);
+            setSaveStatus(navigator.onLine ? "error" : "pending");
+
+            console.error("Whiteboard synchronization is pending.", error);
 
             saveFailed = true;
             break;
           }
 
-          const message =
-            error instanceof Error
-              ? error.message
-              : "An unexpected error occurred while saving.";
+          // Never process another queued save after a remote conflict.
+          if (revisionConflictRef.current) {
+            saveFailed = true;
+            break;
+          }
 
-          setSaveError(message);
-          setSaveStatus(navigator.onLine ? "error" : "pending");
-
-          console.error("Whiteboard synchronization is pending.", error);
-
-          saveFailed = true;
-          break;
+          stateToSave = pendingBoardStateRef.current;
         }
-
-        // Never process another queued save after a remote conflict.
-        if (revisionConflictRef.current) {
-          saveFailed = true;
-          break;
-        }
-
-        stateToSave = pendingBoardStateRef.current;
-      }
-
-      if (
-        !saveFailed &&
-        !pendingBoardStateRef.current &&
-        !revisionConflictRef.current
-      ) {
-        setSaveStatus("saved");
-        setSaveError(
-          localBackupWarning
-            ? "Saved to cloud, but the local backup is unavailable."
-            : "",
-        );
-      }
-    } finally {
-      saveInProgressRef.current = false;
-
-      // Retry only ordinary pending saves, never revision conflicts.
-      if (retryRequestedRef.current) {
-        retryRequestedRef.current = false;
 
         if (
-          !conflictDetected &&
-          !revisionConflictRef.current &&
-          navigator.onLine &&
-          pendingBoardStateRef.current
+          !saveFailed &&
+          !pendingBoardStateRef.current &&
+          !revisionConflictRef.current
         ) {
-          void saveLatestBoard(pendingBoardStateRef.current);
+          setSaveStatus("saved");
+          setSaveError(
+            localBackupWarning
+              ? "Saved to cloud, but the local backup is unavailable."
+              : "",
+          );
+        }
+      } finally {
+        saveInProgressRef.current = false;
+
+        // Retry only ordinary pending saves, never revision conflicts.
+        if (retryRequestedRef.current) {
+          retryRequestedRef.current = false;
+
+          if (
+            !conflictDetected &&
+            !authorizationFailed &&
+            !revisionConflictRef.current &&
+            navigator.onLine &&
+            pendingBoardStateRef.current
+          ) {
+            void saveLatestBoardRef.current?.(pendingBoardStateRef.current);
+          }
         }
       }
-    }
-  };
+    },
+    [roomId],
+  );
+
+  useEffect(() => {
+    saveLatestBoardRef.current = saveLatestBoard;
+  }, [saveLatestBoard]);
 
   // Keep Undo/Redo controls synchronized with the history position.
-  const updateHistoryAvailability = () => {
+  const updateHistoryAvailability = useCallback(() => {
     setCanUndo(historyIndexRef.current > 0);
     setCanRedo(historyIndexRef.current < historyRef.current.length - 1);
-  };
+  }, []);
 
   // Record a completed local board action.
-  const recordHistorySnapshot = (canvas: Canvas) => {
-    if (isApplyingHistoryRef.current) return;
+  const recordHistorySnapshot = useCallback(
+    (canvas: Canvas) => {
+      if (isApplyingHistoryRef.current) return;
 
-    const snapshot = createBoardState(canvas);
-    const previousSnapshot = historyRef.current[historyIndexRef.current];
+      const snapshot = createBoardState(canvas);
+      const previousSnapshot = historyRef.current[historyIndexRef.current];
 
-    // Ignore duplicate snapshots, including intermediate Fabric events.
-    if (
-      previousSnapshot &&
-      JSON.stringify(previousSnapshot.canvas) ===
-        JSON.stringify(snapshot.canvas)
-    ) {
-      return;
-    }
+      // Ignore duplicate snapshots, including intermediate Fabric events.
+      if (
+        previousSnapshot &&
+        JSON.stringify(previousSnapshot.canvas) ===
+          JSON.stringify(snapshot.canvas)
+      ) {
+        return;
+      }
 
-    // A new action after Undo discards the old redo branch.
-    historyRef.current = historyRef.current.slice(
-      0,
-      historyIndexRef.current + 1,
-    );
+      // A new action after Undo discards the old redo branch.
+      historyRef.current = historyRef.current.slice(
+        0,
+        historyIndexRef.current + 1,
+      );
 
-    // Keep an independent copy of the serialized canvas state.
-    const savedSnapshot = JSON.parse(JSON.stringify(snapshot)) as BoardState;
+      // Keep an independent copy of the serialized canvas state.
+      const savedSnapshot = JSON.parse(JSON.stringify(snapshot)) as BoardState;
 
-    historyRef.current.push(savedSnapshot);
+      historyRef.current.push(savedSnapshot);
 
-    // Limit memory usage to the latest 50 snapshots.
-    if (historyRef.current.length > 50) {
-      historyRef.current.shift();
-    }
+      // Limit memory usage to the latest 50 snapshots.
+      if (historyRef.current.length > 50) {
+        historyRef.current.shift();
+      }
 
-    historyIndexRef.current = historyRef.current.length - 1;
+      historyIndexRef.current = historyRef.current.length - 1;
 
-    updateHistoryAvailability();
-  };
+      updateHistoryAvailability();
+    },
+    [updateHistoryAvailability],
+  );
 
   // Establish a fresh history baseline after board restoration.
-  const resetHistory = (canvas: Canvas) => {
-    const snapshot = JSON.parse(
-      JSON.stringify(createBoardState(canvas)),
-    ) as BoardState;
+  const resetHistory = useCallback(
+    (canvas: Canvas) => {
+      const snapshot = JSON.parse(
+        JSON.stringify(createBoardState(canvas)),
+      ) as BoardState;
 
-    historyRef.current = [snapshot];
-    historyIndexRef.current = 0;
+      historyRef.current = [snapshot];
+      historyIndexRef.current = 0;
 
-    updateHistoryAvailability();
-  };
+      updateHistoryAvailability();
+    },
+    [updateHistoryAvailability],
+  );
 
-  const retryPendingSave = () => {
+  const retryPendingSave = useCallback(() => {
     // A conflict cannot be resolved by retrying the same stale revision.
     if (revisionConflictRef.current) {
       return;
@@ -777,7 +835,7 @@ export default function WhiteboardCanvas({
     if (pendingBoardState) {
       void saveLatestBoard(pendingBoardState);
     }
-  };
+  }, [saveLatestBoard]);
 
   const activeToolRef = useRef<WhiteboardTool>(activeTool);
   const selectedShapeRef = useRef<ShapeType>(selectedShape);
@@ -1190,6 +1248,16 @@ export default function WhiteboardCanvas({
       isRestoring = true;
 
       try {
+        const credential =
+          getRoomOwnerToken(roomId) ?? getGuestCredential(roomId);
+
+        if (!credential) {
+          setSaveStatus("error");
+          setSaveError(
+            "You do not have access to this board. Please use a valid board invitation or owner session.",
+          );
+          return;
+        }
         let boardState: {
           version?: number;
           canvas?: Record<string, unknown>;
@@ -1256,10 +1324,24 @@ export default function WhiteboardCanvas({
         // 2. Fetch the server board and its current revision.
         // A pending local draft keeps priority over the server board.
         let serverRevision: number | null = null;
+        let cloudFetchSucceeded = false;
+        let allowOfflineRecovery = !navigator.onLine;
 
         try {
-          const response = await fetch(`${API_URL}/api/rooms/${roomId}`);
+          const response = await fetch(`${API_URL}/api/rooms/${roomId}`, {
+            headers: {
+              Authorization: `Bearer ${credential}`,
+            },
+          });
           const result = await response.json();
+
+          if (response.status === 401 || response.status === 403) {
+            setSaveStatus("error");
+            setSaveError(
+              "Your board access is invalid, expired, or revoked. Please request access again.",
+            );
+            return;
+          }
 
           if (!response.ok || !result.success) {
             throw new Error(result.message || "Failed to load room");
@@ -1278,6 +1360,7 @@ export default function WhiteboardCanvas({
           } else {
             throw new Error("Server returned an invalid board revision.");
           }
+          cloudFetchSucceeded = true;
 
           if (!boardState) {
             const serverBoard = result.data?.boardData;
@@ -1297,6 +1380,17 @@ export default function WhiteboardCanvas({
           }
         } catch (error) {
           console.error("Failed to load board from cloud:", error);
+
+          allowOfflineRecovery =
+            !navigator.onLine || error instanceof TypeError;
+
+          if (!cloudFetchSucceeded && !allowOfflineRecovery) {
+            setSaveStatus("error");
+            setSaveError(
+              "The board could not be verified with the server. Please try again.",
+            );
+            return;
+          }
         }
 
         if (isDisposed) return;
@@ -1332,7 +1426,7 @@ export default function WhiteboardCanvas({
         }
 
         // 4. Fall back to localStorage if the database has no saved board.
-        if (!boardState) {
+        if (!boardState && (cloudFetchSucceeded || allowOfflineRecovery)) {
           const saved = localStorage.getItem(storageKey);
 
           if (saved) {
@@ -1418,13 +1512,26 @@ export default function WhiteboardCanvas({
     const handleSocketConnect = () => {
       if (isDisposed) return;
 
-      const participant = getParticipantIdentity();
-
-      socket.emit("join-room", { roomId, participant });
+      socket.emit("join-room", { roomId });
 
       console.log(`Connected to whiteboard room: ${roomId}`);
 
       retryPendingSave();
+    };
+
+    const handleRoomError = (payload: unknown) => {
+      if (isDisposed) return;
+
+      const message =
+        payload &&
+        typeof payload === "object" &&
+        "message" in payload &&
+        typeof payload.message === "string"
+          ? payload.message
+          : "Your room access could not be verified.";
+
+      setSaveStatus("error");
+      setSaveError(message);
     };
 
     const handleOnline = () => {
@@ -1438,17 +1545,27 @@ export default function WhiteboardCanvas({
       if (isDisposed) return;
 
       window.addEventListener("online", handleOnline);
+      const credential =
+        getRoomOwnerToken(roomId) ?? getGuestCredential(roomId);
+
+      if (!credential) {
+        console.error("No valid room access credential found.");
+        return;
+      }
+
+      socket.auth = { credential };
 
       socket.on("board-update", handleRemoteBoardUpdate);
       socket.on("presence-update", handlePresenceUpdate);
       socket.on("cursor-update", handleCursorUpdate);
       socket.on("connect", handleSocketConnect);
+      socket.on("room-error", handleRoomError);
 
       if (socket.connected) {
-        handleSocketConnect();
-      } else {
-        socket.connect();
+        socket.disconnect();
       }
+
+      socket.connect();
     });
 
     const eraseTarget = (target: unknown) => {
@@ -1965,6 +2082,7 @@ export default function WhiteboardCanvas({
       socket.off("presence-update", handlePresenceUpdate);
       socket.off("cursor-update", handleCursorUpdate);
       socket.off("connect", handleSocketConnect);
+      socket.off("room-error", handleRoomError);
 
       window.removeEventListener("online", handleOnline);
 
@@ -1973,6 +2091,7 @@ export default function WhiteboardCanvas({
       }
 
       socket.disconnect();
+      socket.auth = {};
 
       resizeObserver.disconnect();
       window.removeEventListener("keydown", handleKeyDown);
@@ -2010,7 +2129,15 @@ export default function WhiteboardCanvas({
 
       void canvas.dispose();
     };
-  }, [roomId]);
+  }, [
+    roomId,
+    onRoomNameChange,
+    recordHistorySnapshot,
+    resetHistory,
+    retryPendingSave,
+    saveLatestBoard,
+    updateHistoryAvailability,
+  ]);
 
   // Synchronize the selected toolbar tool with Fabric.js.
   useEffect(() => {

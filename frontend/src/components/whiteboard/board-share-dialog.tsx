@@ -27,6 +27,19 @@ type Invitation = {
   updatedAt: string;
 };
 
+type AccessRequest = {
+  id: string;
+  participantId: string;
+  participantName: string;
+  status: "PENDING";
+  createdAt: string;
+  shareSettings: {
+    permission: Permission;
+    accessMode: AccessMode;
+    expiresAt: string | null;
+  };
+};
+
 type Props = {
   roomId: string;
   onClose: () => void;
@@ -70,6 +83,10 @@ export default function BoardShareDialog({ roomId, onClose }: Props) {
     useState<Permission>("VIEWER");
   const [inviteExpiry, setInviteExpiry] = useState("");
   const [inviteUrl, setInviteUrl] = useState("");
+  const [accessRequests, setAccessRequests] = useState<AccessRequest[]>([]);
+  const [reviewPermissions, setReviewPermissions] = useState<
+    Record<string, Permission>
+  >({});
 
   const getHeaders = useCallback(() => {
     const token = getRoomOwnerToken(roomId);
@@ -88,17 +105,22 @@ export default function BoardShareDialog({ roomId, onClose }: Props) {
     try {
       const headers = getHeaders();
 
-      const [shareResponse, invitationResponse] = await Promise.all([
-        fetch(`${API_URL}/api/rooms/${roomId}/share-link`, {
-          headers,
-        }),
-        fetch(`${API_URL}/api/rooms/${roomId}/invitations`, {
-          headers,
-        }),
-      ]);
+      const [shareResponse, invitationResponse, accessRequestsResponse] =
+        await Promise.all([
+          fetch(`${API_URL}/api/rooms/${roomId}/share-link`, {
+            headers,
+          }),
+          fetch(`${API_URL}/api/rooms/${roomId}/invitations`, {
+            headers,
+          }),
+          fetch(`${API_URL}/api/rooms/${roomId}/access-requests`, {
+            headers,
+          }),
+        ]);
 
       const shareResult = await shareResponse.json();
       const invitationResult = await invitationResponse.json();
+      const accessRequestsResult = await accessRequestsResponse.json();
 
       if (!shareResponse.ok || !shareResult.success) {
         throw new Error(
@@ -109,6 +131,12 @@ export default function BoardShareDialog({ roomId, onClose }: Props) {
       if (!invitationResponse.ok || !invitationResult.success) {
         throw new Error(
           invitationResult.message || "Failed to load invitations.",
+        );
+      }
+
+      if (!accessRequestsResponse.ok || !accessRequestsResult.success) {
+        throw new Error(
+          accessRequestsResult.message || "Failed to load access requests.",
         );
       }
 
@@ -124,6 +152,7 @@ export default function BoardShareDialog({ roomId, onClose }: Props) {
       }
 
       setInvitations(invitationResult.data);
+      setAccessRequests(accessRequestsResult.data);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to load sharing data.",
@@ -191,7 +220,9 @@ export default function BoardShareDialog({ roomId, onClose }: Props) {
       }
 
       if (result.data.token) {
-        setShareUrl(`${window.location.origin}/join/${result.data.token}`);
+        setShareUrl(
+          `${window.location.origin}/join/${roomId}/${result.data.token}`,
+        );
         setNotice(
           "New link generated. Copy it now; its token cannot be retrieved again.",
         );
@@ -270,7 +301,9 @@ export default function BoardShareDialog({ roomId, onClose }: Props) {
         throw new Error(result.message || "Failed to create invitation.");
       }
 
-      setInviteUrl(`${window.location.origin}/join/${result.data.token}`);
+      setInviteUrl(
+        `${window.location.origin}/join/${roomId}/${result.data.token}`,
+      );
       setNotice(
         "Invitation generated. Copy it now; its token cannot be retrieved again.",
       );
@@ -315,6 +348,61 @@ export default function BoardShareDialog({ roomId, onClose }: Props) {
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to revoke invitation.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleAccessRequestReview(
+    requestId: string,
+    decision: "APPROVED" | "REJECTED",
+  ) {
+    const request = accessRequests.find((item) => item.id === requestId);
+
+    if (!request) {
+      setError("This access request is no longer available.");
+      return;
+    }
+
+    const selectedPermission =
+      reviewPermissions[requestId] ?? request.shareSettings.permission;
+
+    setSaving(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const response = await fetch(
+        `${API_URL}/api/rooms/${roomId}/access-requests/${requestId}`,
+        {
+          method: "PATCH",
+          headers: getHeaders(),
+          body: JSON.stringify({
+            decision,
+            ...(decision === "APPROVED"
+              ? { permission: selectedPermission }
+              : {}),
+          }),
+        },
+      );
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || "Failed to review access request.");
+      }
+
+      setNotice(
+        decision === "APPROVED"
+          ? `Access approved as ${result.data.permission}.`
+          : "Access request rejected.",
+      );
+
+      await loadData();
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to review access request.",
       );
     } finally {
       setSaving(false);
@@ -508,10 +596,108 @@ export default function BoardShareDialog({ roomId, onClose }: Props) {
               )}
 
               <p className="share-warning">
-                Guest access and link validation will become available in the
-                next implementation phase. Links generated now are not yet ready
-                for guest use.
+                Guests must use a valid invitation or share link to access this
+                board. Viewer and Editor permissions are enforced for board
+                updates and live collaboration.
               </p>
+            </section>
+
+            <section className="share-section">
+              <div className="share-section-heading">
+                <div>
+                  <h3>Access requests</h3>
+                  <p>
+                    Review people requesting access through an approval-based
+                    link.
+                  </p>
+                </div>
+                <span className="share-status">
+                  {accessRequests.length} pending
+                </span>
+              </div>
+
+              {accessRequests.length === 0 ? (
+                <p className="share-muted-text">No pending access requests.</p>
+              ) : (
+                <div className="share-invitation-list">
+                  {accessRequests.map((request) => (
+                    <div className="share-invitation-item" key={request.id}>
+                      <div className="share-invitation-info">
+                        <strong>{request.participantName}</strong>
+                        <span>
+                          Requests {request.shareSettings.permission} access ·
+                          Approval required
+                        </span>
+                        <small>Requested {formatDate(request.createdAt)}</small>
+                        {request.shareSettings.expiresAt && (
+                          <small>
+                            Link expires{" "}
+                            {formatDate(request.shareSettings.expiresAt)}
+                          </small>
+                        )}
+
+                        {request.shareSettings.permission === "EDITOR" ? (
+                          <div className="share-setting">
+                            <label htmlFor={`request-permission-${request.id}`}>
+                              Grant permission
+                            </label>
+                            <select
+                              id={`request-permission-${request.id}`}
+                              value={
+                                reviewPermissions[request.id] ??
+                                request.shareSettings.permission
+                              }
+                              disabled={saving}
+                              onChange={(event) =>
+                                setReviewPermissions((current) => ({
+                                  ...current,
+                                  [request.id]: event.target
+                                    .value as Permission,
+                                }))
+                              }
+                            >
+                              <option value="VIEWER">Viewer — can view</option>
+                              <option value="EDITOR">Editor — can edit</option>
+                            </select>
+                          </div>
+                        ) : (
+                          <small>Can only be approved as Viewer.</small>
+                        )}
+                      </div>
+
+                      <div className="share-actions">
+                        <button
+                          type="button"
+                          className="share-primary-button"
+                          disabled={saving}
+                          onClick={() =>
+                            void handleAccessRequestReview(
+                              request.id,
+                              "APPROVED",
+                            )
+                          }
+                        >
+                          Approve
+                        </button>
+
+                        <button
+                          type="button"
+                          className="share-danger-button"
+                          disabled={saving}
+                          onClick={() =>
+                            void handleAccessRequestReview(
+                              request.id,
+                              "REJECTED",
+                            )
+                          }
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
 
             <section className="share-section">
