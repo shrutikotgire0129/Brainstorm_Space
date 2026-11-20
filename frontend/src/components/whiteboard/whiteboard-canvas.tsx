@@ -576,6 +576,9 @@ export default function WhiteboardCanvas({
 
   const saveLatestBoard = useCallback(
     async (boardState: BoardState) => {
+      if (roomRoleRef.current === null || roomRoleRef.current === "VIEWER") {
+        return;
+      }
       // A revision conflict requires an explicit resolution.
       // Continue preserving newer edits locally without uploading them.
       if (revisionConflictRef.current) {
@@ -839,6 +842,7 @@ export default function WhiteboardCanvas({
 
   const activeToolRef = useRef<WhiteboardTool>(activeTool);
   const selectedShapeRef = useRef<ShapeType>(selectedShape);
+  const roomRoleRef = useRef<"OWNER" | "EDITOR" | "VIEWER" | null>(null);
 
   const [zoom, setZoom] = useState(1);
   const [brushColor, setBrushColor] = useState("#252525");
@@ -934,6 +938,10 @@ export default function WhiteboardCanvas({
     };
 
     const saveBoard = () => {
+      if (roomRoleRef.current === null || roomRoleRef.current === "VIEWER") {
+        return;
+      }
+
       if (
         isRestoring ||
         isApplyingRemoteChanges ||
@@ -970,6 +978,9 @@ export default function WhiteboardCanvas({
 
     // Restore a history snapshot without recording the restoration as a new action.
     const applyHistorySnapshot = async (nextIndex: number) => {
+      if (roomRoleRef.current === null || roomRoleRef.current === "VIEWER") {
+        return;
+      }
       if (
         isApplyingHistoryRef.current ||
         nextIndex < 0 ||
@@ -1131,6 +1142,7 @@ export default function WhiteboardCanvas({
       // Never overwrite a board with local changes that have not
       // been synchronized with the database.
       const hasLocalPendingSave =
+        roomRoleRef.current !== "VIEWER" &&
         localStorage.getItem(`brainstorm-space-pending:${roomId}`) === "true";
 
       const hasUncommittedLocalChanges =
@@ -1201,6 +1213,30 @@ export default function WhiteboardCanvas({
         await canvas.loadFromJSON(state.canvas);
 
         if (isDisposed) return;
+
+        if (roomRoleRef.current === "VIEWER") {
+          canvas.discardActiveObject();
+          canvas.selection = false;
+          canvas.isDrawingMode = false;
+
+          canvas.getObjects().forEach((object) => {
+            object.set({
+              selectable: false,
+              evented: false,
+              hasControls: false,
+              hasBorders: false,
+              lockMovementX: true,
+              lockMovementY: true,
+              lockRotation: true,
+              lockScalingX: true,
+              lockScalingY: true,
+            });
+
+            if ("editable" in object) {
+              object.set("editable", false);
+            }
+          });
+        }
 
         const transform = state.viewportTransform;
 
@@ -1326,6 +1362,7 @@ export default function WhiteboardCanvas({
         let serverRevision: number | null = null;
         let cloudFetchSucceeded = false;
         let allowOfflineRecovery = !navigator.onLine;
+        let role: "OWNER" | "EDITOR" | "VIEWER" | null = null;
 
         try {
           const response = await fetch(`${API_URL}/api/rooms/${roomId}`, {
@@ -1347,6 +1384,21 @@ export default function WhiteboardCanvas({
             throw new Error(result.message || "Failed to load room");
           }
 
+          role = result.data?.role;
+
+          if (role !== "OWNER" && role !== "EDITOR" && role !== "VIEWER") {
+            throw new Error("Server returned an invalid board access role.");
+          }
+
+          roomRoleRef.current = role;
+
+          if (role === "VIEWER") {
+            activeToolRef.current = "select";
+            canvas.isDrawingMode = false;
+            canvas.selection = false;
+            canvas.discardActiveObject();
+          }
+
           const roomName = result.data?.name;
 
           if (typeof roomName === "string" && roomName.trim()) {
@@ -1361,6 +1413,21 @@ export default function WhiteboardCanvas({
             throw new Error("Server returned an invalid board revision.");
           }
           cloudFetchSucceeded = true;
+
+          if (role === "VIEWER") {
+            const serverBoard = result.data?.boardData;
+
+            boardState =
+              serverBoard &&
+              typeof serverBoard === "object" &&
+              serverBoard.canvas &&
+              typeof serverBoard.canvas === "object"
+                ? serverBoard
+                : null;
+
+            restoredFromLocalStorage = false;
+            setHasRecoveryDraft(false);
+          }
 
           if (!boardState) {
             const serverBoard = result.data?.boardData;
@@ -1398,6 +1465,7 @@ export default function WhiteboardCanvas({
         // 3. A pending draft without a valid base revision cannot be
         // safely synchronized. Preserve it and require conflict resolution.
         if (
+          role !== "VIEWER" &&
           hasPendingSave &&
           (!hasValidBaseRevision || serverRevision === null)
         ) {
@@ -1412,6 +1480,7 @@ export default function WhiteboardCanvas({
             "Your local draft is preserved, but its original server revision could not be verified. Reload the latest board or resolve the draft manually before saving.",
           );
         } else if (
+          role !== "VIEWER" &&
           hasPendingSave &&
           serverRevision !== null &&
           roomRevisionRef.current !== serverRevision
@@ -1426,7 +1495,11 @@ export default function WhiteboardCanvas({
         }
 
         // 4. Fall back to localStorage if the database has no saved board.
-        if (!boardState && (cloudFetchSucceeded || allowOfflineRecovery)) {
+        if (
+          role !== "VIEWER" &&
+          !boardState &&
+          (cloudFetchSucceeded || allowOfflineRecovery)
+        ) {
           const saved = localStorage.getItem(storageKey);
 
           if (saved) {
@@ -1459,6 +1532,29 @@ export default function WhiteboardCanvas({
 
         if (isDisposed) return;
 
+        if (roomRoleRef.current === "VIEWER") {
+          canvas.discardActiveObject();
+          canvas.selection = false;
+          canvas.isDrawingMode = false;
+
+          canvas.getObjects().forEach((object) => {
+            object.set({
+              selectable: false,
+              evented: false,
+              hasControls: false,
+              hasBorders: false,
+              lockMovementX: true,
+              lockMovementY: true,
+              lockRotation: true,
+              lockScalingX: true,
+              lockScalingY: true,
+            });
+
+            if ("editable" in object) {
+              object.set("editable", false);
+            }
+          });
+        }
         const transform = boardState.viewportTransform;
 
         if (
@@ -1780,10 +1876,17 @@ export default function WhiteboardCanvas({
       e: MouseEvent | TouchEvent;
       target?: unknown;
     }) => {
+      if (roomRoleRef.current === null) return;
+
       if (canvas.isDrawingMode) return;
 
       const pointerEvent = event.e as MouseEvent;
       const currentTool = activeToolRef.current;
+      const isViewer = roomRoleRef.current === "VIEWER";
+
+      if (isViewer && currentTool !== "select") {
+        return;
+      }
 
       if (currentTool === "erase") {
         eraseTarget(event.target);
@@ -1835,10 +1938,14 @@ export default function WhiteboardCanvas({
       e: MouseEvent | TouchEvent;
       target?: unknown;
     }) => {
-      if (activeToolRef.current === "erase") {
+      if (roomRoleRef.current === null) return;
+      if (roomRoleRef.current === "VIEWER") {
+        if (!isPanning) return;
+      } else if (activeToolRef.current === "erase") {
         eraseTarget(event.target);
         return;
       }
+
       // Update the selected shape while dragging.
       if (shapeBeingDrawn && shapeStartPoint) {
         const pointer = canvas.getScenePoint(event.e as MouseEvent);
@@ -1900,7 +2007,7 @@ export default function WhiteboardCanvas({
         shapeBeingDrawn = null;
         shapeStartPoint = null;
       }
-      if (isPanning) {
+      if (isPanning && roomRoleRef.current !== "VIEWER") {
         saveBoard();
       }
 
@@ -1942,7 +2049,10 @@ export default function WhiteboardCanvas({
       canvas.zoomToPoint(new Point(pointer.x, pointer.y), nextZoom);
 
       setZoom(nextZoom);
-      saveBoard();
+
+      if (roomRoleRef.current !== "VIEWER") {
+        saveBoard();
+      }
     };
 
     // Delete the currently selected note or text object.
@@ -1955,6 +2065,10 @@ export default function WhiteboardCanvas({
         target instanceof HTMLTextAreaElement ||
         (target instanceof HTMLElement && target.isContentEditable)
       ) {
+        return;
+      }
+
+      if (roomRoleRef.current === null || roomRoleRef.current === "VIEWER") {
         return;
       }
 
@@ -2109,6 +2223,7 @@ export default function WhiteboardCanvas({
 
         // Flush pending changes unless a conflict reload is in progress.
         if (
+          roomRoleRef.current !== "VIEWER" &&
           !skipCleanupFlushRef.current &&
           !isRestoring &&
           !isApplyingRemoteChanges
@@ -2147,15 +2262,18 @@ export default function WhiteboardCanvas({
 
     if (!canvas) return;
 
-    const drawingEnabled = activeTool === "draw";
+    const isViewer = roomRoleRef.current === "VIEWER";
+    const effectiveTool = isViewer ? "select" : activeTool;
+    const drawingEnabled = effectiveTool === "draw";
 
+    activeToolRef.current = effectiveTool;
     canvas.isDrawingMode = drawingEnabled;
     canvas.selection = false;
 
     const cursor =
-      activeTool === "select"
+      effectiveTool === "select"
         ? "grab"
-        : activeTool === "erase"
+        : effectiveTool === "erase"
           ? ERASER_CURSOR
           : "crosshair";
 

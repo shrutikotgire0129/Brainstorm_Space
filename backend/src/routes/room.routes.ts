@@ -177,7 +177,10 @@ router.get("/:roomId", async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      data: room,
+      data: {
+        ...room,
+        role: authorization.role,
+      },
     });
   } catch (error) {
     console.error("Get room error:", error);
